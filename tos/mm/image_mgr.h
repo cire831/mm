@@ -50,6 +50,12 @@
 
 #include <image_info.h>
 
+/*
+ * Each image is a maximum of 128KiB, which is exactly
+ * 128KiB * (1 sector / 512B) (1024B/KiB) = 256 sectors
+ */
+#define IMAGE_SIZE_SECTORS      (256)
+
 /* maximum size image in each slot */
 #define IMAGE_SIZE      (128 * 1024)
 
@@ -59,23 +65,32 @@
 
 typedef enum {
   SLOT_EMPTY = 0,
-  SLOT_ALLOC,
+  SLOT_FILLING,
   SLOT_VALID,
   SLOT_BACKUP,
   SLOT_ACTIVE,
   SLOT_EJECTED,
 } slot_state_t;
 
-typedef struct {
+
+typedef struct {                /* Dir Slot structure */
   image_ver_t  ver_id;
-  uint32_t     image_start_blk;
   slot_state_t slot_state;
 } image_dir_entry_t;
 
-typedef struct {
-  uint32_t dir_sig;
-  image_dir_entry_t dir[IMAGE_DIR_SLOTS];
-  uint32_t dir_sig_a;
+
+typedef struct {                /* Image Directory */
+  uint32_t          dir_sig;
+  image_dir_entry_t slots[IMAGE_DIR_SLOTS];
+  uint32_t          dir_sig_a;
+  uint16_t          chksum;
 } image_dir_t;
+
+
+typedef struct {                /* cache, superset of directory */
+  image_dir_t dir;
+  uint32_t    start_blk;
+  uint32_t    end_blk;
+} image_dir_cache_t;
 
 #endif  /* __IMAGE_MGR_H__ */
