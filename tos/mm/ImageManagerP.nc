@@ -97,8 +97,12 @@ implementation {
 
   im_state_t  im_state;                 /* current manager state */
 
-  uint32_t    cur_slot_blk;             /* where on the sd we are writing */
-  uint32_t    slot_blk_limit;           /* upper limit of current slot */
+  /*
+   * control cells used when filling a slot
+   */
+  uint32_t    filling_slot_blk;        /* where on the sd we are writing */
+  uint32_t    filling_slot_blk_limit;  /* upper limit of current slot */
+  image_dir_entry_t filling_slot_p;    /* directory slot being filled */
 
   uint32_t    dir_blk;                  /* where the directory lives */
   image_dir_t im_dir;                   /* directory cache */
@@ -119,6 +123,27 @@ implementation {
   }
 
 
+  error_t allocate_slot() {
+    image_dir_entry_t * slot_p;
+    uint16_t x;
+
+    slot_p = NULL;
+    for (x=0; x < IMAGE_DIR_SLOTS; x++) {
+      if (im_dir_cache.dir.slots[x].slot_state == SLOT_EMPTY){
+        slot_p = IM_SLOT_SEC(x);
+        break;
+      }
+    }
+
+    if (slot_p) {
+      slot_p->slot_state = SLOT_FILLING;
+      slot_p->ver_id = ver_id;
+      slot_p->next_write_sector = 0;
+      filling_slot_p = slot_p;
+      return SUCCESS;
+    }
+    return ENOMEM;
+  }
   event void Boot.booted() {
     error_t err;
 
@@ -154,6 +179,23 @@ implementation {
    */
 
   command error_t ImageManager.alloc(image_ver_t ver_id) {
+    error_t rtn;
+
+    if (im_state != IMS_IDLE) {
+        im_panic(7, im_state, 0);
+        return FAIL;
+    }
+    if (!verify_IM_dir()) {
+      im_panic(8, im_state, 0);
+      return FAIL;
+    }
+
+    im_bytes_remaining = SD_BLOCKSIZE;
+    im_buf_ptr = &im_wrk_buf[0];
+    rtn = allocate_slot();
+    if (rtn == SUCCESS)
+      im_state = IMS_FILL_WAITING;
+    return rtn;
   }
 
 
