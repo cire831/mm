@@ -341,8 +341,152 @@ implementation {
   event void SDread.readDone(uint32_t blk_id, uint8_t *read_buf, error_t err) {
     switch(im_state) {
       default:
-        im_panic(5, im_state, 0);
-        return;
+        im_panic(24, im_state, 0);
+        return(FAIL);
+
+      case IMS_FILL_WAITING:
+        slot_p->slot_state = SLOT_VALID;
+        call SDResource.request();
+
+        if (im_bytes_remaining == SD_BLOCKSIZE) { /* If the buffer is empty */
+          im_state = IMS_FILL_SYNC_REQ_SD;
+        } else {
+          im_state = IMS_FILL_LAST_REQ_SD;
+        }
+        return(SUCCESS);
+    }
+
+
+    /*
+     * Write: write a buffer of data to the allocated slot
+     *
+     * input:  buff ptr   pointer to data being written
+     *         len        how much data needs to be written.
+     * output: err        SUCCESS, no issues
+     *                    ESIZE, write exceeds limits of slot
+     *                    EINVAL, wrong state
+     *
+     * return: remainder  how many bytes still need to be written
+     *
+     * ImageManager will move the bytes from buff into the working buffer
+     * (wbuff).  It will stop when wbuff is full.  It will return the number
+     * of bytes that haven't been copied.  If it returns 0, the incoming
+     * buffer has been completely consumed.  This indicates that the incoming
+     * buffer can be released by the caller and used for other activities.
+     *
+     * When there is a remainder, the remaining bytes in the incoming buffer
+     * still need be written.  But this can not happen until after wbuff has
+     * been written to disk.  The caller must wait for the write_complete
+     * signal.  It can then resend the remaining bytes using another call to
+     * ImageManager.write(...).
+     */
+    command uint16_t ImageManager.write(uint8_t *buf, uint16_t len, error_t err) {
+      uint16_t copy_len;
+      uint16_t bytes_left;
+
+      switch(im_state) {
+        default:
+          im_panic(25, im_state, 0);
+          return(0);
+
+        case IMS_FILL_WAITING:
+          if ((im_buf_ptr < &im_wrk_buf[0])
+              || (im_buf_ptr > &im_wrk_buf[SD_BUF_SIZE)]) {
+            im_panic(26, im_state, 0);
+            return(0);
+          }
+          if (len <= im_bytes_remaining) {
+            copy_len = len;
+            im_bytes_remaining -= len;
+            bytes_left = 0;
+          } else {
+            copy_len = im_bytes_remaining;
+            bytes_left = len - copy_len;
+            im_bytes_remaining = 0;
+          }
+
+          for (x = 0; x < copy_len; x++) {
+            *im_buf_ptr++ = buf[x];
+          }
+          if (bytes_left) {
+            im_state = IMS_FILL_REQ_SD;
+            call SDResource.request();
+          }
+          return(bytes_left);
+      }
+    }
+
+
+    event void SDResource.granted() {
+      error_t err;
+
+      switch(im_state) {
+        default:
+          im_panic(27, im_state, 0);
+          return;
+
+        case IMS_INIT_REQ_SD:
+          im_state = IMS_INIT_READ_DIR;
+          err = call SDread.read(IM_DIR_SEC, im_wrk_buf);
+          if (err) {
+            im_panic(28, err, 0);
+            return;
+          }
+          return;
+
+        case IMS_FILL_REQ_SD:
+          im_state = IMS_FILL_WRITING;
+          write_slot_buffer();
+          return;
+
+        case IMS_FILL_LAST_REQ_SD:
+          im_state = IMS_FILL_LAST_WRITE;
+          write_slot_buffer();
+          return;
+
+        case IMS_FILL_SYNC_REQ_SD:
+          im_state = IMS_FILL_SYNC_WRITE;
+          write_dir_cache();
+          return;
+
+        case IMS_DELETE_SYNC_REQ_SD:
+          im_state = IMS_DELETE_SYNC_WRITE;
+          write_dir_cache();
+          return;
+      }
+    }
+
+    event void SDread.readDone(uint32_t blk_id, uint8_t *read_buf, error_t err){
+      switch(im_state) {
+        default:
+          im_panic(29, im_state, 0);
+          return;
+
+        case IMS_INIT_READ_DIR:
+          if (err) {
+            im_panic(30, err, 0);
+            return;
+          }
+
+          /* working buffer has the directory structure in it now.
+           * copy over to working directory cache.
+           */
+          uint8_t * cache_p = (uint8_t *)&im_dir_cache.dir;
+          for (x = 0; x < size_of(im_dir_cache.dir); x++) {
+            cache_p[x] = im_wrk_buf[x];
+          }
+
+          /* verify sig and checksum */
+          if (!verify_IM_dir()) {
+            im_panic(31, err, 0);
+            return;
+          }
+          im_state = IDLE;
+          call SDResource.release();
+          signal IMBooted.booted();
+          return;
+      }
+    }
 
       case IMS_READ_DIR:
         if (err) {
