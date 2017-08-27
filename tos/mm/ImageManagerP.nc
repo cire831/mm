@@ -313,22 +313,14 @@ implementation {
    *
    * input:  len        length of image being pushed to SD
    * output: none
-   * return: error_t    SUCCESS,  all good.  image fits slot
-   *                    FAIL,     image too big for slot (panic)
+   * return: bool       TRUE.  image fits.
+   *                    FALSE, image too big for slot
    */
 
-  command error_t ImageManager.check_fit(uint32_t len) {
-    switch(im_state) {
-      default:
-        im_panic(11, im_state, 0);
-        return(FAIL);
-
-      case IMS_IDLE:
-        if (len < (SD_BLOCKSIZE * IMAGE_SIZE_SECTORS)) {
-          return (SUCCESS);
-        }
-        return (FAIL);
-    }
+  command bool ImageManager.check_fit(uint32_t len) {
+    if (len < IMAGE_SIZE) return TRUE;
+    im_panic(11, im_state, len);
+    return FALSE;
   }
 
 
