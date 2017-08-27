@@ -144,6 +144,16 @@ implementation {
     }
     return ENOMEM;
   }
+
+
+  bool cmp_ver_id(image_ver_t *ver0, image_ver_t *ver1) {
+    if (ver0.major != ver1.major) return FALSE;
+    if (ver0.minor != ver1.minor) return FALSE;
+    if (ver0.build != ver1.build) return FALSE;
+    return TRUE;
+  }
+
+
   event void Boot.booted() {
     error_t err;
 
