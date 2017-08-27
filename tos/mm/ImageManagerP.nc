@@ -154,6 +154,59 @@ implementation {
   }
 
 
+  error_t dealloc_slot(ver_id) {
+    image_dir_entry_t * slot_p;
+    slot_p = call ImageManger.dir_find_ver(ver_id);
+    if ((!slot_p) || (slot_p->slot_state != SLOT_FILLING)) {
+      im_panic(1, im_state, 0);
+      return (FAIL);
+    }
+    slot_p->slot_state = SLOT_EMPTY;
+    slot_p->ver_id = 0;
+    slot_p->next_write_sector = 0;
+    return (SUCCESS);
+  }
+
+  image_dir_entry_t dir_find_ver(image_ver_t ver_id) {
+    image_dir_entry_t * slot_p = NULL;
+
+    for (x=0; x < IMAGE_DIR_SLOTS; x++) {
+      if (cmp_ver_id(&im_dir_cache.dir.slots[x].ver_id, &ver_id)) {
+        slot_p = IM_SLOT_SEC(x);
+        break;
+      }
+    }
+    return slot_p;
+  }
+
+
+  bool verify_IM_dir();
+
+  void write_dir_cache() {
+    if (!verify_IM_dir()) {
+      im_panic(2, err, 0);
+      return;
+    }
+    uint8_t * cache_p;
+    cache_p = (uint8_t *)&im_dir_cache.dir;
+    for (x = 0; x < size_of(im_dir_cache.dir); x++) {
+      im_wrk_buf[x] = cache_p[x];
+    }
+
+    if (err = call SDwrite.write(IM_DIR_SEC, im_wrk_buf)) {
+      im_panic(3, err, 0);
+      return;
+    }
+  }
+
+
+  void write_slot_buffer () {
+    err = call SDwrite.write(cur_slot_blk, im_wrk_buf);
+    if (err)
+      im_panic(4, err, 0);
+  }
+
+
   event void Boot.booted() {
     error_t err;
 
