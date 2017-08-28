@@ -8,16 +8,7 @@
 #include <string.h>
 
 #include <message.h>
-#include "am_types.h"
 #include "filesource.h"
-#include "serialprotocol.h"
-#include "serialpacket.h"
-#include "DtSensorDataMsg.h"
-#include "DtSyncMsg.h"
-#include "DtRebootMsg.h"
-#include "gDTConstants.h"
-#include "gSensorIDs.h"
-#include "sync.h"
 
 /*
  * Number of empty sectors that will cause the dump to stop.

@@ -1,14 +1,12 @@
 /*
- * mmdump - dump mm data, debug, or control stream from
- * file, serial, or serial forwarder.
+ * tagdump - dump mm data, debug, or control stream from a file.
  *
- * Copyright 2008, 2010, 2014: Eric B. Decker
+ * Copyright 2008, 2010, 2014, 2017: Eric B. Decker
  * All rights reserved.
  *
  * Mam-Mark Project
  *
  * @author Eric B. Decker
- * @author Matthew R.
  */
 
 #include <stdio.h>
@@ -20,30 +18,11 @@
 #include <string.h>
 #include <time.h>
 
-#include <serialsource.h>
-#include <sfsource.h>
 #include <message.h>
-#include "am_types.h"
-#include "sync.h"
 #include "filesource.h"
-#include "serialpacket.h"
-#include "serialprotocol.h"
-#include "platform_version.h"
-#include "gSensorIDs.h"
-#include "gDTConstants.h"
-#include "DtIgnoreMsg.h"
-#include "DtSyncMsg.h"
-#include "DtRebootMsg.h"
-#include "DtPanicMsg.h"
-#include "DtSensorDataMsg.h"
-#include "DtVersionMsg.h"
-#include "DtEventMsg.h"
-#include "DtGpsTimeMsg.h"
-#include "DtGpsPosMsg.h"
-#include "DtGpsRawMsg.h"
 #include "ParseSirf.h"
 
-#define VERSION "mmdump: v0.11.1  (20120502)\n"
+#define VERSION "tagdump: v0.90.1  (20170827)\n"
 
 int debug	= 0,
     verbose	= 0,
@@ -52,17 +31,12 @@ int debug	= 0,
 
 static void usage(char *name) {
   fprintf(stderr, VERSION);
-  fprintf(stderr, "usage: %s [-Dev] --serial <serial device>  <baud rate>\n", name);
-  fprintf(stderr, "       %s [-Dev] --sf  <host>  <port>\n", name);
-  fprintf(stderr, "       %s [-Dev] [-f | --file] <input file>\n", name);
-  fprintf(stderr, "  --serial take input directly from serial port (default)\n");
-  fprintf(stderr, "  --sf     connect via serial forwarder\n");
-  fprintf(stderr, "  --file | -f\n");
+  fprintf(stderr, "usage: %s [-Dev] [-f | --file] <input file>\n", name);
+  fprintf(stderr, "  --file | -f (default)\n");
   fprintf(stderr, "           take input from <input file>\n");
   fprintf(stderr, "  -D       increment debugging level\n");
   fprintf(stderr, "             1 - basic debugging, 2 - dump packet data\n");
   fprintf(stderr, "  -e       show event logging\n");
-  fprintf(stderr, "  -d       write data files for each sensor\n");
   fprintf(stderr, "  -h | --help\n");
   fprintf(stderr, "  -V | --version\n");
   fprintf(stderr, "  -v       verbose mode (increment)\n");
@@ -116,7 +90,7 @@ dtype2str(uint8_t id) {
     case DT_CONFIG:	return("config");
     case DT_SYNC:	return("sync");
     case DT_REBOOT:	return("reboot");
-    case DT_PANIC:	return("panic"); 
+    case DT_PANIC:	return("panic");
     case DT_GPS_RAW:    return("gps_raw");
     case DT_GPS_TIME:	return("gps_time");
     case DT_GPS_POS:	return("gps_pos");
@@ -321,7 +295,7 @@ process_sync(tmsg_t *msg) {
   if (write_data) {
     for (i = 0; i < MM_NUM_SENSORS; i++) {
       fprintf(fp[i], "%% ");
-      if (err) 
+      if (err)
 	fprintf(fp[i], "--- err ");
       fprintf(fp[i], "SYNC: %c %d %08x %s %d\n", c, stamp, majik, s, boot_count);
     }
@@ -713,27 +687,21 @@ process_mm_dt(tmsg_t *msg) {		/* data, typed */
 
 
 typedef enum {
-  INPUT_SERIAL = 1,
-  INPUT_SF     = 2,
-  INPUT_FILE   = 3,
+  INPUT_FILE   = 1,
 } input_src_t;
-  
+
 
 /* options descriptor */
 static struct option longopts[] = {
-  { "sf",	no_argument, NULL, 1 },
-  { "serial",	no_argument, NULL, 2 },
   { "file",	no_argument, NULL, 'f' },
   { "version",	no_argument, NULL, 'V' },
   { "help",	no_argument, NULL, 'h' },
   { NULL,	0,	     NULL, 0 }
 };
 
-serial_source   serial_src;
-int		sf_src;		/* fd for serial forwarder server */
 int		file_src;	/* fd for input file */
 
-int 
+int
 main(int argc, char **argv) {
   uint8_t *packet;
   char *prog_name;
@@ -745,28 +713,15 @@ main(int argc, char **argv) {
   uint8_t group;
   uint8_t stype;
 
-  serial_src = NULL;
-  sf_src = 0;
   file_src = 0;
-  input_src = INPUT_SERIAL;
+  input_src = INPUT_FILE;
   bail = 0;
   prog_name = basename(argv[0]);
-  while ((c = getopt_long(argc, argv, "Ddevf", longopts, NULL)) != EOF) {
+  while ((c = getopt_long(argc, argv, "Devf", longopts, NULL)) != EOF) {
     switch (c) {
-      case 1:
-	bail = 1;
-	input_src = INPUT_SF;
-	break;
-      case 2:
-	bail = 1;
-	input_src = INPUT_SERIAL;
-	break;
       case 'f':
 	bail = 1;
 	input_src = INPUT_FILE;
-	break;
-      case 'd':
-	write_data = 1;
 	break;
       case 'D':
 	debug++;
@@ -791,14 +746,6 @@ main(int argc, char **argv) {
   argv += optind;
 
   switch(input_src) {
-    case INPUT_SERIAL:
-    case INPUT_SF:
-      if (argc != 2) {
-	usage(prog_name);
-	exit(2);
-      }
-      break;
-
     case INPUT_FILE:
       if (argc != 1) {
 	usage(prog_name);
@@ -811,12 +758,6 @@ main(int argc, char **argv) {
     fprintf(stderr, VERSION);
     fprintf(stderr, "ref build: %d.%d.%d\n", MAJOR, MINOR, REF_BUILD);
     switch (input_src) {
-      case INPUT_SERIAL:
-	fprintf(stderr, "opening: serial@%s:%d\n", argv[0], platform_baud_rate(argv[1]));
-	break;
-      case INPUT_SF:
-	fprintf(stderr, "opening: sf@%s:%d\n", argv[0], atoi(argv[1]));
-	break;
       case INPUT_FILE:
 	fprintf(stderr, "opening: file@%s\n", argv[0]);
 	break;
