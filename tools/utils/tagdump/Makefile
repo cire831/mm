@@ -7,8 +7,9 @@
 # MM_PLATFORM_DIR.
 #
 
-ROOT_DIR = ../../..
+ROOT_DIR = $(MM_ROOT)
 INSTALL_DIR = /usr/local/bin
+TRD = $(TINYOS_ROOT_DIR)
 
 TARGET=dev6a
 TYPED_DATA=$(ROOT_DIR)/mm/include/typed_data.h
@@ -17,15 +18,12 @@ TYPED_DATA=$(ROOT_DIR)/mm/include/typed_data.h
 # COMM=$(MM_ROOT)/tos/comm
 # SENSORS=$(MM_ROOT)/tos/chips/sensors
 
-BUILD_NUM_FILE = _Build
-REF_BUILD_NUM := $(shell if [ -f $(BUILD_NUM_FILE) ]; then echo $$(($$(cat $(BUILD_NUM_FILE)))); else echo 0; fi)
-
 # STOW_DIR=/opt
 
 PROGRAMS=tagdump
 
 CC=gcc
-INCS    = -I$(ROOT_DIR)/include -I$(ROOT_DIR)/mm/include
+INCS    = -I$(ROOT_DIR)/include -I$(ROOT_DIR)/mm/include -I$(TRD)/tos/system
 CFLAGS += -g -O0 -Wall -DREF_BUILD=$(REF_BUILD_NUM) $(INCS)
 # LIBS +=
 
