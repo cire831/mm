@@ -18,7 +18,7 @@
 #include <string.h>
 #include <time.h>
 
-#include <message.h>
+#include <typed_data.h>
 #include "filesource.h"
 #include "ParseSirf.h"
 
@@ -250,10 +250,10 @@ process_config(tmsg_t *msg) {
 
 
 void
-process_sync(tmsg_t *msg) {
+process_sync(dt_reboot_t *rbtp) {
   int i;
   uint16_t len;
-  uint8_t  dtype;
+  dtype_t  dtype;
   uint32_t stamp;
   uint32_t majik;
   uint16_t boot_count;
@@ -265,27 +265,30 @@ process_sync(tmsg_t *msg) {
    * first part of sync and reboot messages are exactly the same.
    * reboot also has boot_count.
    */
-  len =   dt_sync_len_get(msg);
-  dtype = dt_sync_dtype_get(msg);
-  stamp = dt_sync_stamp_ms_get(msg);
-  majik = dt_sync_sync_majik_get(msg);
+  len =   rbtp->len;
+  dtype = rbtp->dtype;
+  stamp = rbtp->stamp_ms;
+  majik = rbtp->sync_majik;
   boot_count = 0;
   if (majik != SYNC_MAJIK)
     err = 1;
   switch (dtype) {
+    default:
+      /* bitch like hell */
+      return;
     case DT_SYNC:
-      if (len != DT_SYNC_SIZE)
+      if (len != sizeof(dt_sync_t))
 	err = 1;
       c = 'S';
       s = "sync";
       break;
 
     case DT_REBOOT:
-      if (len != DT_REBOOT_SIZE)
+      if (len != sizeof(dt_reboot_t))
 	err = 1;
       c = 'R';
       s = "reboot";
-      boot_count = dt_reboot_boot_count_get(msg);
+      boot_count = rbtp->boot_count;
       break;
   }
   if (err)
@@ -631,38 +634,36 @@ process_unk_dblk(tmsg_t *msg) {
 
 
 void
-process_mm_dt(tmsg_t *msg) {		/* data, typed */
+process_dblk(dt_header_t *dblk_p) {
   uint16_t len;
   uint8_t  dtype;
 
-  len = dt_ignore_len_get(msg);
-  dtype = dt_ignore_dtype_get(msg);
-#ifdef notdef
+  len   = dblk_p->len;
+  dtype = dblk_p->dtype;
   if (debug)
     fprintf(stderr, "    len: %0d (0x%02x)  dtype: %0d (0x%02x) %s\n", len, len, dtype, dtype, dtype2str(dtype));
-#endif
   switch (dtype) {
     case DT_IGNORE:
-      process_ignore(msg);
+      process_ignore(dblk_p);
       break;
     case DT_CONFIG:
-      process_config(msg);
+      process_config(dblk_p);
       break;
     case DT_SYNC:
     case DT_REBOOT:
-      process_sync(msg);
+      process_sync((dt_reboot_t *) dblk_p);
       break;
     case DT_PANIC:
-      process_panic(msg);
+      process_panic(dblk_p);
       break;
     case DT_GPS_TIME:
-      process_gps_time(msg);
+      process_gps_time(dblk_p);
       break;
     case DT_GPS_POS:
-      process_gps_pos(msg);
+      process_gps_pos(dblk_p);
       break;
     case DT_SENSOR_DATA:
-      process_sensor_data(msg);
+      process_sensor_data(dblk_p);
       break;
     case DT_SENSOR_SET:
       break;
@@ -671,16 +672,16 @@ process_mm_dt(tmsg_t *msg) {		/* data, typed */
     case DT_NOTE:
       break;
     case DT_GPS_RAW:
-      process_gps_raw(msg);
+      process_gps_raw(dblk_p);
       break;
     case DT_VERSION:
-      process_version(msg);
+      process_version(dblk_p);
       break;
     case DT_EVENT:
-      process_event(msg);
+      process_event(dblk_p);
       break;
     default:
-      process_unk_dblk(msg);
+      process_unk_dblk(dblk_p);
       break;
   }
 }
@@ -703,15 +704,11 @@ int		file_src;	/* fd for input file */
 
 int
 main(int argc, char **argv) {
-  uint8_t *packet;
   char *prog_name;
   int len;
   int c, bail;
   input_src_t input_src;
-  tmsg_t *msg;
-  uint16_t dest, src;
-  uint8_t group;
-  uint8_t stype;
+  dt_header_t *dblk_p;
 
   file_src = 0;
   input_src = INPUT_FILE;
@@ -757,101 +754,37 @@ main(int argc, char **argv) {
   if (verbose) {
     fprintf(stderr, VERSION);
     fprintf(stderr, "ref build: %d.%d.%d\n", MAJOR, MINOR, REF_BUILD);
-    switch (input_src) {
-      case INPUT_FILE:
-	fprintf(stderr, "opening: file@%s\n", argv[0]);
-	break;
-    }
+    fprintf(stderr, "opening: file@%s\n", argv[0]);
   } else {
     fprintf(stderr, "*** (non-verbose) no data will be displayed\n");
   }
 
+#ifdef notdef
   if (write_data)
     open_files("data/");
+#endif
 
-  switch(input_src) {
-    case INPUT_SERIAL:
-      serial_src = open_serial_source(argv[0], platform_baud_rate(argv[1]), 0, stderr_msg);
-      if (!serial_src) {
-	fprintf(stderr, "*** Couldn't open serial port at %s:%s\n",
-		argv[0], argv[1]);
-	perror("error: ");
-	exit(1);
-      }
-      break;
-
-    case INPUT_SF:
-      sf_src = open_sf_source(argv[0], atoi(argv[1]));
-      if (sf_src < 0) {
-	fprintf(stderr, "*** Couldn't open serial forwarder at %s:%s\n",
-		argv[0], argv[1]);
-	perror("error: ");
-	exit(1);
-      }
-      break;
-
-    case INPUT_FILE:
-      file_src = open_file_source(argv[0]);
-      if (file_src < 0) {
-	fprintf(stderr, "*** Couldn't open input file: %s\n", argv[0]);
-	perror("error: ");
-	exit(1);
-      }
-      break;
+  file_src = open_file_source(argv[0]);
+  if (file_src < 0) {
+    fprintf(stderr, "*** Couldn't open input file: %s\n", argv[0]);
+    perror("error: ");
+    exit(1);
   }
 
   for(;;) {
-    switch(input_src) {
-      case INPUT_SERIAL:
-	packet = read_serial_packet(serial_src, &len);
-	break;
-
-      case INPUT_SF:
-	packet = read_sf_packet(sf_src, &len);
-	break;
-
-      case INPUT_FILE:
-	packet = read_file_packet(file_src, &len);
-	break;
-    }
-    if (!packet) {
+    dblk_p = read_file_dblk(file_src, &len);
+    if (!dblk_p) {
       if (verbose)
 	fprintf(stderr, "*** end of stream, terminating\n");
       exit(0);
     }
-    msg = new_tmsg(packet, len);
-    if (!msg) {
-      fprintf(stderr, "*** new_tmsg failed (null)\n");
-      exit(2);
-    }
-    c = spacket_header_dispatch_get(msg);
-    if (len < SPACKET_SIZE || c != SERIAL_TOS_SERIAL_ACTIVE_MESSAGE_ID) {
-      fprintf(stderr, "*** non-AM packet (type %d, len %d (%0x)): ",
-	      packet[0], len, len);
-      hexprint(packet, len);
-      continue;
-    }
     if (debug > 1)
-      hexprint(packet, len);
-    dest = spacket_header_dest_get(msg);
-    src  = spacket_header_src_get(msg);
-    len  = spacket_header_length_get(msg);
-    group= spacket_header_group_get(msg);
-    stype= spacket_header_type_get(msg);
-
-    /*
-     * move over serial header
-     */
-    reset_tmsg(msg, ((uint8_t *)tmsg_data(msg)) + SPACKET_SIZE, tmsg_length(msg) - spacket_data_offset(0));
-    switch(stype) {
-      case AM_MM_DT:			/* data, typed */
-	process_mm_dt(msg);
+      hexprint(dblk_p, len);
+    process_dblk(dblk_p);
 	break;
 
       default:
 	break;
     }
-    free_tmsg(msg);
-    free((void *)packet);
   }
 }
