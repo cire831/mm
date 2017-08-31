@@ -132,14 +132,15 @@ implementation {
   }
 
 
-  error_t allocate_slot() {
+  error_t allocate_slot (image_ver_t ver_id, uint16_t *slot_id) {
     image_dir_entry_t * slot_p;
     uint16_t x;
 
+    *slot_id = -1;
     slot_p = NULL;
     for (x=0; x < IMAGE_DIR_SLOTS; x++) {
       if (im_dir_cache.dir.slots[x].slot_state == SLOT_EMPTY){
-        slot_p = IM_SLOT_SEC(x);
+        slot_p = &im_dir_cache.dir.slots[x];
         break;
       }
     }
@@ -147,7 +148,7 @@ implementation {
     if (slot_p) {
       slot_p->slot_state = SLOT_FILLING;
       slot_p->ver_id = ver_id;
-      im_filling_slot_p = slot_p;
+      *slot_id = x;
       return SUCCESS;
     }
     return ENOMEM;
@@ -162,24 +163,12 @@ implementation {
   }
 
 
-  error_t dealloc_slot(ver_id) {
-    image_dir_entry_t * slot_p;
-    slot_p = call ImageManger.dir_find_ver(ver_id);
-    if ((!slot_p) || (slot_p->slot_state != SLOT_FILLING)) {
-      im_panic(1, im_state, 0);
-      return (FAIL);
-    }
-    slot_p->slot_state = SLOT_EMPTY;
-    slot_p->ver_id = 0;
-    return (SUCCESS);
-  }
-
   image_dir_entry_t dir_find_ver(image_ver_t ver_id) {
     image_dir_entry_t * slot_p = NULL;
 
     for (x=0; x < IMAGE_DIR_SLOTS; x++) {
       if (cmp_ver_id(&im_dir_cache.dir.slots[x].ver_id, &ver_id)) {
-        slot_p = IM_SLOT_SEC(x);
+        slot_p = &im_dir_cache.dir.slots[x];
         break;
       }
     }
@@ -187,10 +176,26 @@ implementation {
   }
 
 
-  bool verify_IM_dir();
+  error_t dealloc_slot(image_ver_t ver_id) {
+    image_dir_entry_t * slot_p;
+
+    slot_p = dir_find_ver(ver_id);
+    if ((!slot_p) || (slot_p->slot_state != SLOT_FILLING)) {
+      im_panic(1, im_state, slot_p->slot_state);
+      return (FAIL);
+    }
+    slot_p->slot_state = SLOT_EMPTY;
+    slot_p->ver_id = 0;
+    return (SUCCESS);
+  }
+
+
+  bool verify_IM_dir_cache() {
+  }
+
 
   void write_dir_cache() {
-    if (!verify_IM_dir()) {
+    if (!verify_IM_dir_cache()) {
       im_panic(2, err, 0);
       return;
     }
@@ -208,7 +213,7 @@ implementation {
 
 
   void write_slot_buffer () {
-    err = call SDwrite.write(cur_slot_blk, im_wrk_buf);
+    err = call SDwrite.write(im_dir_cache.next_write_blk, im_wrk_buf);
     if (err)
       im_panic(4, err, 0);
   }
@@ -249,20 +254,22 @@ implementation {
 
   command error_t ImageManager.alloc(image_ver_t ver_id) {
     error_t rtn;
+    uint16_t x;
 
     if (im_state != IMS_IDLE) {
         im_panic(7, im_state, 0);
         return FAIL;
     }
-    if (!verify_IM_dir()) {
+    if (!verify_IM_dir_cache()) {
       im_panic(8, im_state, 0);
       return FAIL;
     }
 
     im_bytes_remaining = SD_BLOCKSIZE;
     im_buf_ptr = &im_wrk_buf[0];
-    rtn = allocate_slot();
-    if (rtn == SUCCESS)
+    rtn = allocate_slot(ver_id, &x);
+    if (rtn == SUCCESS) {
+      im_dir_cache.next_write_blk = im_dir_cache.dir.slots[x].start_blk;
       im_state = IMS_FILL_WAITING;
     return rtn;
   }
@@ -280,7 +287,7 @@ implementation {
   command error_t ImageManager.alloc_abort(image_ver_t ver_id) {
     image_dir_entry_t * slot_p;
 
-    if (!verify_IM_dir()) {
+    if (!verify_IM_dir_cache()) {
       im_panic(9, im_state, 0);
       return(FAIL);
     }
@@ -314,8 +321,20 @@ implementation {
   }
 
 
+   /*
+    *
+    * Delete: Sets the state of an image  to "empty", marking the slot  available for another image.
+    *
+    * input: ver_id
+    * output: none
+    *
+    * return: error_t
+    *
+    *
+    */
+
   command error_t ImageManager.delete(image_ver_t ver_id) {
-      if (!verify_IM_dir()) {
+      if (!verify_IM_dir_cache()) {
         im_panic(12, im_state, 0);
       return;
     }
@@ -340,8 +359,20 @@ implementation {
   }
 
 
+   /*
+    *
+    * Dir_Find_Ver: Returns a pointer to the slot for given image version.
+    *
+    * input: ver_id
+    * output: none
+    *
+    * return: dir_find_ver(ver_id)
+    *
+    */
+
+
   command image_dir_entry_t *ImageManager.dir_find_ver(image_ver_t ver_id) {
-    if (!verify_IM_dir()) {
+    if (!verify_IM_dir_cache()) {
       im_panic(15, im_state, 0);
       return;
     }
@@ -356,8 +387,21 @@ implementation {
   }
 
 
+   /*
+    *
+    * Dir_Get_Active: Returns a pointer to the  entry that is currently set to the active image.
+    *                 Returns "null" if there is no active image set in image directory.
+    *
+    * input: none
+    * output: none
+    *
+    * return: slot_p, error_t
+    *
+    */
+
+
   command image_dir_entry_t *ImageManager.dir_get_active() {
-    if (!verify_IM_dir()) {
+    if (!verify_IM_dir_cache()) {
       im_panic(17, im_state, 0);
       return(NULL);
     }
@@ -372,7 +416,7 @@ implementation {
 
         for (x=0; x < IMAGE_DIR_SLOTS; x++) {
           if (im_dir_cache.dir.slots[x].slot_state == SLOT_ACTIVE){
-            slot_p = IM_SLOT_SEC(x);
+            slot_p = &im_dir_cache.dir.slots[x];
             if (found_it == true) {
               im_panic(19, im_state, 0);
               return(NULL);
@@ -385,8 +429,21 @@ implementation {
   }
 
 
+ /*
+    *
+    * Dir_Get_Dir: Returns a pointer to the image directory indexed by idx
+    *                        This call can be used to itterate through the current contents of image directory.
+    *
+    * input: idx
+    * output: image_dir_entry_t
+    *
+    * return:
+    *
+    */
+
+
   command image_dir_entry_t *ImageManager.dir_get_dir(uint8_t idx) {
-    if (!verify_IM_dir()) {
+    if (!verify_IM_dir_cache()) {
       im_panic(20, im_state, 0);
       return NULL;
     }
@@ -399,6 +456,19 @@ implementation {
         return &im_dir_cache.dir.slots[0];
     }
   }
+
+
+   /*
+    *
+    * Dir_Set_Active: Verifies that one image in directory is set as valid,
+    *                 Sets the image state to Active for given ver_id.
+    *
+    * input: ver_id
+    * output: none
+    *
+    * return: error_t
+    *
+    */
 
 
   command error_t ImageManager.dir_set_active(image_ver_t ver_id) {
@@ -417,6 +487,19 @@ implementation {
         return(SUCCESS);
     }
   }
+
+
+   /*
+    *
+    * Finish: Writes any remaining bytes of data in the image working buffer to the disk. Marks image as valid.
+    * Commits image data to image directory.
+    *
+    * input: buf, len
+    * output: none
+    *
+    * return: error_t
+    *
+    */
 
 
   command error_t ImageManager.finish(image_ver_t ver_id) {
@@ -462,6 +545,8 @@ implementation {
    * signal.  It can then resend the remaining bytes using another call to
    * ImageManager.write(...).
    */
+
+
   command uint16_t ImageManager.write(uint8_t *buf, uint16_t len, error_t err) {
     uint16_t copy_len;
     uint16_t bytes_left;
@@ -473,7 +558,7 @@ implementation {
 
       case IMS_FILL_WAITING:
         if ((im_buf_ptr < &im_wrk_buf[0])
-            || (im_buf_ptr > &im_wrk_buf[SD_BUF_SIZE)]) {
+            || (im_buf_ptr >= &im_wrk_buf[SD_BUF_SIZE]) {
           im_panic(26, im_state, 0);
           return(0);
         }
@@ -491,6 +576,9 @@ implementation {
           *im_buf_ptr++ = buf[x];
         }
         if (bytes_left) {
+          if (im_dir_cache.next_write_blk > im_dir_cache.dir.slots[im_filling_slot_id].end_blk)
+            im_panic(27, im_dir_cache.next_write_blk, im_filling_slot_id);
+
           im_state = IMS_FILL_REQ_SD;
           call SDResource.request();
         }
@@ -504,14 +592,14 @@ implementation {
 
     switch(im_state) {
       default:
-        im_panic(27, im_state, 0);
+        im_panic(28, im_state, 0);
         return;
 
       case IMS_INIT_REQ_SD:
         im_state = IMS_INIT_READ_DIR;
         err = call SDread.read(IM_DIR_SEC, im_wrk_buf);
         if (err) {
-          im_panic(28, err, 0);
+          im_panic(29, err, 0);
           return;
         }
         return;
@@ -542,14 +630,24 @@ implementation {
   event void SDread.readDone(uint32_t blk_id, uint8_t *read_buf, error_t err) {
     switch(im_state) {
       default:
-        im_panic(29, im_state, 0);
+        im_panic(30, im_state, 0);
         return;
 
       case IMS_INIT_READ_DIR:
         if (err) {
-          im_panic(30, err, 0);
+          im_panic(31, err, 0);
           return;
         }
+        /* working buffer is zeroed out   */
+        for (x = 0; x < size_of(image_dir_cache.dir); x++) {
+          if (im_wrk_buf[x] != 0) {
+            break;
+          }
+        }
+
+        if (x => size_of(im_dir_cache.dir) {
+            init.dir();
+            s0 = 0; }
 
         /* working buffer has the directory structure in it now.
          * copy over to working directory cache.
@@ -559,9 +657,11 @@ implementation {
           cache_p[x] = im_wrk_buf[x];
         }
 
+        /* write im_wrk_buf to SD (if was just initialized) */
+
         /* verify sig and checksum */
-        if (!verify_IM_dir()) {
-          im_panic(31, err, 0);
+        if (!verify_IM_dir_cache()) {
+          im_panic(32, err, 0);
           return;
         }
 
@@ -590,11 +690,12 @@ implementation {
   event void SDwrite.writeDone(uint32_t blk, uint8_t *buf, error_t error) {
     switch(im_state) {
       default:
-        im_panic(32, im_state, 0);
+        im_panic(33, im_state, 0);
         return;
 
       case IMS_FILL_WRITING:
         im_state = IMS_FILL_WAITING;
+        im_dir_cache.next_write_blk++;
 
         call SDResource.release();
         signal ImageManager.write_continue();
