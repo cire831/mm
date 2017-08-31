@@ -49,6 +49,7 @@
 #define __IMAGE_MGR_H__
 
 #include <image_info.h>
+#include <sd.h>
 
 /* maximum size image in each slot */
 #define IMAGE_SIZE      (128 * 1024)
@@ -57,13 +58,23 @@
  * Each image is a maximum of 128KiB, which is exactly
  * 128KiB * (1 sector / 512B) * (1024B/Ki) = 256 sectors
  */
-#define IMAGE_SIZE_SECTORS      ((IMAGE_SIZE) / 512)
-#define IMAGE_SIZE_SECTORS      (256)
-
+#define IMAGE_SIZE_SECTORS      ((IMAGE_SIZE) / (SD_BLOCKSIZE))
 
 /* number of maximum images we support */
 #define IMAGE_DIR_SLOTS 4
 #define IMAGE_DIR_SIG   0x17254172
+
+/* IM_DIR_SEC is the sector number  where the IM directory lives */
+#define IM_DIR_SEC im_dir_cache.start_blk
+
+/* IM_SLOT_SEC is the sector where the image lives on SD for slot (x) */
+#define IM_SLOT_SEC(x) (((IMAGE_SIZE_SECTORS * (x)) + 1) + IM_DIR_SEC)
+
+/* IM_SLOT_LAST_SEC is the last sector of the image on SD for slot (x) */
+#define IM_SLOT_LAST_SEC(x) (IM_SLOT_SEC(x) + IMAGE_SIZE_SECTORS)
+
+/* IM_SLOT_PTR is the pointer to the first byte of a slot (x) */
+#define IM_SLOT_PTR(x) ((IM_SLOT_SEC(x)) * (SD_BLOCKSIZE))
 
 typedef enum {
   SLOT_EMPTY = 0,
@@ -90,9 +101,10 @@ typedef struct {                /* Image Directory */
 
 
 typedef struct {                /* cache, superset of directory */
-  image_dir_t dir;
-  uint32_t    start_blk;
-  uint32_t    end_blk;
+  image_dir_t dir;              /* dir cache */
+  uint32_t    start_blk;        /* start/end region limits from */
+  uint32_t    end_blk;          /* file system */
+  uint32_t    next_write_blk;   /* cur slot being write, block to write */
 } image_dir_cache_t;
 
 #endif  /* __IMAGE_MGR_H__ */

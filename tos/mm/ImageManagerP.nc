@@ -55,14 +55,14 @@ enum {
  * for interacting with the SD.  Used to collect (marshal) incoming
  * data for writing to the SD.
  *
- * cur_slot_blk (csb): The block in the allocated slot that we are working
+ * im_filling_slot_blk (fsb): The block in the allocated slot that we are working
  * with.
  *
  * *** State Machine Description
  *
  * IDLE                no active activity.  Free for next operation.
- *                     IMWB and CSB are meaningless.
- * FILL_WAITING        filling buffer.  IMWB and CSB active.
+ *                     IMWB and FSB are meaningless.
+ * FILL_WAITING        filling buffer.  IMWB and FSB active.
  * FILL_REQ_SD         req SD for IMWB flush.
  * FILL_WRITING        writing buffer (IMWB) to SD.
  * FILL_LAST_REQ_SD    req SD for last buffer write.
@@ -109,29 +109,19 @@ implementation {
 
   im_state_t  im_state;                 /* current manager state */
 
-  image_dir_cache_t                     /* Image directory cache */
-              im_dir_cache;
-  uint32_t    dir_blk;                  /* where the directory lives */
+  /* Image directory cache is a copy of the directory on the SD.
+   * It holds changes made to the directory prior to being committed. */
+  image_dir_cache_t im_dir_cache;
 
   /*
    * control cells used when filling a slot
    */
-  uint32_t    filling_slot_blk;         /* where on the sd we are writing */
-  uint32_t    filling_slot_blk_limit;   /* upper limit of current slot */
+  uint32_t    im_filling_slot_blk;         /* sector num of next write on SD */
 
   uint8_t     im_wrk_buf[SD_BUF_SIZE];  /* working buffer. */
   uint8_t    *im_buf_ptr;               /* pntr into above buffer */
   uint16_t    im_bytes_remaining;       /* remaining bytes in above */
-  image_dir_entry_t                     /* directory slot being filled */
-             *im_filling_slot_p;
-
-
-/* IM_DIR_SEC is the sector block where the IM directory lives */
-#define IM_DIR_SEC im_dir_cache.start_blk
-
-/* IM_SLOT_SEC is the sector where the image actually lives for slot (x) */
-#define IM_SLOT_SEC(x) (((IMAGE_SIZE_SECTORS * (x)) + 1) + im_dir_cache.start_blk)
-
+  uint16_t    im_filling_slot_id;          /* index of the slot being filled */
 
   void im_warn(uint8_t where, parg_t p0, parg_t p1) {
     call Panic.warn(PANIC_IM, where, p0, p1, 0, 0);
