@@ -89,6 +89,7 @@ typedef enum {
 typedef struct {                /* Dir Slot structure */
   image_ver_t  ver_id;
   slot_state_t slot_state;
+  uint32_t s0;
 } image_dir_entry_t;
 
 
@@ -96,7 +97,7 @@ typedef struct {                /* Image Directory */
   uint32_t          dir_sig;
   image_dir_entry_t slots[IMAGE_DIR_SLOTS];
   uint32_t          dir_sig_a;
-  uint16_t          chksum;
+  uint32_t          chksum;
 } image_dir_t;
 
 
