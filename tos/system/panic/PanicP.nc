@@ -62,7 +62,9 @@ norace pcb_t pcb;              /* panic control block */
 
 extern image_info_t image_info;
 extern uint32_t     __crash_stack_top__;
+extern uint32_t crash_stack[];
 extern uint32_t crash_regs[];
+
 
 typedef struct {
   uint32_t a0;                          /* arguments */
@@ -73,6 +75,17 @@ typedef struct {
   uint8_t  where;
 } panic_args_t;                         /* panic args stash */
 
+
+typedef struct {
+  uint32_t r0;
+  uint32_t r1;
+  uint32_t r2;
+  uint32_t r3;
+  uint32_t r12;
+  uint32_t lr;
+} exc_regs_t;
+
+exc_regs_t *exc_regs;
 panic_args_t _panic_args;
 panic_block_0_t _panic_block_0;
 panic_block_0_t *b0p = &_panic_block_0;
@@ -346,15 +359,20 @@ implementation {
     uint32_t *sp_32 = (uint32_t *)0xE000ED24; /* Fault regs base address */
     uint32_t *dp_32;
     uint32_t i;
+    register uint32_t cur_sp asm ("sp");
     pac = &b0p->crash_info;
 
-    #define MAX_REGS 13
+    exc_regs = (exc_regs_t*)cur_sp;
+
+    pac->bxRegs[0] = exc_regs->r0;
+
+#define MAX_REGS 13
     i = 0;
     while(i <= MAX_REGS) {
-    pac->bxRegs[i] = crash_regs[i];
+    pac->bxRegs[i] = crash_stack[i];
     i++;
     }
-
+    pac->bxRegs[0] = crash_stack[0];
     pac->sig = CRASH_INFO_SIG;
     pac->flags = 0;
     dp_32 = pac->fault_regs;
@@ -442,15 +460,31 @@ implementation {
     call OverWatch.strange(0x84);       /* no return */
   }
 
-
-  static void launch_panic(void *new_stack)
+/*
+ * launch the mainline of panic.
+ *
+ * r0 (new_stack): is the address we want for the crash stack
+ * r1 (cur_lr):    the lr we want to force ourselves to use
+ *                 from our caller.
+ *
+ * using cur_lr effectively makes the call to launch_panic
+ * become a jump to launch_panic.  It doesn't actualy show
+ * up on the backtrace.
+ *
+ * keeping the call sequence together by maintaining the previous
+ * value of lr make it so we can do a valid backtrace even from
+ * the new crash stack.  YUM!
+ */
+  static void launch_panic(void *new_stack, uint32_t cur_lr)
       __attribute__((naked)) {
     nop();                              /* BRK */
     ROM_DEBUG_BREAK(0xf0);
     __asm__ volatile
-      ( "mov r1, sp \n"
+      /* working notes: sp = bxsp; r0 = axsp; r1 = cur_lr */
+      ( "mov r2, sp \n"
         "mov sp, r0 \n"
-        "mov r0, r1 \n"
+        "mov r0, r2 \n"
+        "mov lr, r1 \n"
         "b panic_main \n"
         : : : "memory");
   }
@@ -458,18 +492,27 @@ implementation {
 
   /*
    * Panic.panic: something really bad happened.
+   * switch to crash_stack
+   *
+   * we have to pass in the new stack to get around a linker/asm
+   * issue.  But first we save the other 4 parameters on the
+   * current stack.  This keeps all 6 of panic's parameters
+   * togther but also frees up r0-r3 as scratch.
+   *
+   * we pass in the address of the stack pointer we want to use
+   * as well as the current lr.  This means we can preserve the
+   * stack linkage and gdb doesn't get lost.
    */
   async command void Panic.panic(uint8_t pcode, uint8_t where,
-        parg_t arg0, parg_t arg1, parg_t arg2, parg_t arg3)
-      __attribute__ ((naked, noinline)) {
-       nop();                              /* BRK */
-       ROM_DEBUG_BREAK(0xf0);
-    __asm__ volatile
-      ("bl Panic_SaveRegisters \n"
-       "push {r0-r3} \n" : : : "memory");
-    launch_panic(&__crash_stack_top__);
-  }
+                                 parg_t arg0, parg_t arg1, parg_t arg2, parg_t arg3)
+    __attribute__ ((naked, noinline)) {
+    register uint32_t cur_lr asm ("lr");
 
+    __asm__ volatile ( "stm {r0-r3,r12}, %0\n"
+                       : "=r" (crash_regs)
+                       : : "memory");
+    launch_panic(&__crash_stack_top__, cur_lr);
+  }
 
   event void FS.eraseDone(uint8_t which) { }
 
