@@ -38,8 +38,8 @@
 
 #define SI446x_HW_CTS
 
-#define CRASH_STACK_BYTES 512
-#define CRASH_REGS_BYTES  128
+#define CRASH_STACK_WORDS 128
+#define CRASH_REGS_WORDS  32
 
 /*
  * TagNet uses a single byte length at the start of its header.  This is

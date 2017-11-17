@@ -65,7 +65,6 @@ extern uint32_t     __crash_stack_top__;
 extern uint32_t crash_stack[];
 extern uint32_t crash_regs[];
 
-
 typedef struct {
   uint32_t a0;                          /* arguments */
   uint32_t a1;
@@ -77,13 +76,14 @@ typedef struct {
 
 
 typedef struct {
+  uint32_t lr;
   uint32_t r0;
   uint32_t r1;
   uint32_t r2;
   uint32_t r3;
   uint32_t r12;
-  uint32_t lr;
 } exc_regs_t;
+
 
 exc_regs_t *exc_regs;
 panic_args_t _panic_args;
@@ -135,8 +135,8 @@ implementation {
   }
 #endif
 
-  void __panic_exception_entry(uint32_t exception) @C() @spontaneous() {
-    call Panic.panic(PANIC_EXC, exception, 0, 0, 0, 0);
+  void __panic_exception_entry(uint32_t exception, uint32_t exc_psr, uint32_t exc_msp) @C() @spontaneous() {
+    call Panic.panic(PANIC_EXC, exception, exc_psr, exc_msp, 0, 0);
   }
 
 
@@ -359,27 +359,7 @@ implementation {
     uint32_t *sp_32 = (uint32_t *)0xE000ED24; /* Fault regs base address */
     uint32_t *dp_32;
     uint32_t i;
-    register uint32_t cur_sp asm ("sp");
-    pac = &b0p->crash_info;
-
-    exc_regs = (exc_regs_t*)cur_sp;
-
-    pac->bxRegs[0] = exc_regs->r0;
-
-#define MAX_REGS 13
-    i = 0;
-    while(i <= MAX_REGS) {
-    pac->bxRegs[i] = crash_stack[i];
-    i++;
-    }
-    pac->bxRegs[0] = crash_stack[0];
-    pac->sig = CRASH_INFO_SIG;
-    pac->flags = 0;
-    dp_32 = pac->fault_regs;
-
-    while (w_len) {
-      *dp_32++ = *sp_32++;
-      w_len -= 4; }
+    uint32_t j;
 
     pap = &_panic_args;
     pap->pcode = old_sp[0];
@@ -388,12 +368,48 @@ implementation {
     pap->a1    = old_sp[3];
     pap->a2    = old_sp[4];
     pap->a3    = old_sp[5];
-    debug_break(1);
-    if (pcb.in_panic) {
-      pcb.in_panic |= 0x80;             /* flag a double */
-      ROM_DEBUG_BREAK(0xf1);
-      call OverWatch.strange(0x83);     /* no return */
+
+    pac = &b0p->crash_info;
+    pac->sig = CRASH_INFO_SIG;
+    pac->flags = 0;
+
+    if (pap->pcode == PANIC_EXC) {
+      uint32_t *msp_ptr =  (uint32_t *)(pap->a1);
+      exc_regs = (exc_regs_t *)(msp_ptr + 9);
+
+      pac->bxLR = exc_regs->lr;
+      pac->bxRegs[0] = exc_regs->r0;
+      pac->bxRegs[1] = exc_regs->r1;
+      pac->bxRegs[2] = exc_regs->r2;
+      pac->bxRegs[3] = exc_regs->r3;
+      pac->bxRegs[12] = exc_regs->r12;
+    } else {
+
+      i = 0;
+      while (i < 4) {
+        pac->bxRegs[i] = (uint32_t)(old_sp + i);
+        i++;
+      }
+      pac->bxLR = crash_stack[9 + 118];
+      pac->bxRegs[12] = crash_stack[126];
     }
+
+    i = 4;
+    j = 0;
+    while (j < 8) {
+      pac->bxRegs[i] = crash_stack[j + 118];
+      i++;
+      j++;
+    }
+
+    pac->bxSP = (uint32_t)(old_sp - 4);
+    pac->axPSR = crash_stack[117];
+
+    /* dp_32 allows unfaulted access to fault regs */
+    dp_32 = pac->fault_regs;
+    while (w_len) {
+      *dp_32++ = *sp_32++;
+      w_len -= 4; }
 
     pcb.in_panic = TRUE;
     ROM_DEBUG_BREAK(0xf0);
@@ -449,6 +465,14 @@ implementation {
     update_panic_dir();
     ROM_DEBUG_BREAK(0xf0);
 
+    debug_break(1);
+    if (pcb.in_panic) {
+      pcb.in_panic |= 0x80;             /* flag a double */
+      ROM_DEBUG_BREAK(0xf1);
+      call OverWatch.strange(0x83);     /* no return */
+    }
+
+
 #ifdef PANIC_GATE
     while (g_panic_gate != 0xdeadbeaf) {
       nop();
@@ -476,7 +500,7 @@ implementation {
  * the new crash stack.  YUM!
  */
   static void launch_panic(void *new_stack, uint32_t cur_lr)
-      __attribute__((naked)) {
+    __attribute__((naked)) {
     nop();                              /* BRK */
     ROM_DEBUG_BREAK(0xf0);
     __asm__ volatile
@@ -485,6 +509,9 @@ implementation {
         "mov sp, r0 \n"
         "mov r0, r2 \n"
         "mov lr, r1 \n"
+        "push {r4-r12, lr} \n"
+        "mrs r4, PSR \n"
+        "push {r4} \n"
         "b panic_main \n"
         : : : "memory");
   }
@@ -508,9 +535,7 @@ implementation {
     __attribute__ ((naked, noinline)) {
     register uint32_t cur_lr asm ("lr");
 
-    __asm__ volatile ( "stm {r0-r3,r12}, %0\n"
-                       : "=r" (crash_regs)
-                       : : "memory");
+    __asm__ volatile ( "push {r0-r3} \n" : : : "memory");
     launch_panic(&__crash_stack_top__, cur_lr);
   }
 

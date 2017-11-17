@@ -113,10 +113,10 @@ const image_info_t image_info __attribute__ ((section(".image_meta"))) = {
 ow_control_block_t ow_control_block __attribute__ ((section(".overwatch_data")));
 
 /* space to save registers during crash processing */
-uint32_t crash_regs[CRASH_REGS_BYTES]   __attribute__ ((section(".crash_regs")));
+uint32_t crash_regs[CRASH_REGS_WORDS]   __attribute__ ((section(".crash_regs")));
 
 /* Crash stack is used by unhandled Exception/Fault and Panic */
-uint8_t crash_stack[CRASH_STACK_BYTES] __attribute__ ((section(".crash_stack")));
+uint32_t crash_stack[CRASH_STACK_WORDS] __attribute__ ((section(".crash_stack")));
 
 int  main();                    /* main() symbol defined in RealMainP */
 void __Reset();                 /* start up entry point */
@@ -127,7 +127,7 @@ extern void owl_strange2gold(uint32_t loc);
 extern void owl_startup();
 
 /* see tos/system/panic/PanicP.nc */
-extern void __panic_exception_entry(uint32_t exception);
+extern void __panic_exception_entry(uint32_t exception, uint32_t exc_psr, uint32_t exc_msp);
 
 
 #ifdef MEMINIT_STOP
@@ -168,9 +168,7 @@ void handler_debug(uint32_t exception) {
   t0 = USECS_VAL;
   while ((USECS_VAL - t0) < WIGGLE_DELAY) ;
 
-  ROM_DEBUG_BREAK(0);
-
-#ifdef HANDLER_FAULT_WAIT
+#ifdef HANDLER_FAULT_WAIT_Save
   while (handler_fault_wait != 0xdeadbeaf) {
     nop();
   };
@@ -198,10 +196,14 @@ void HardFault_Handler() {
 void __default_handler()  __attribute__((interrupt));
 void __default_handler()  {
   uint32_t exception;
+  uint32_t exc_psr;
+  uint32_t exc_msp;
 
-  exception = __get_xPSR() & 0x1ff;
+  exc_psr = __get_xPSR();
+  exception = exc_psr & 0x1ff;
+  exc_msp = __get_MSP();
   handler_debug(exception);
-  __panic_exception_entry(exception);
+  __panic_exception_entry(exception, exc_psr, exc_msp);
 }
 
 
@@ -373,26 +375,12 @@ void (* const __vectors[])(void) __attribute__ ((section (".vectors"))) = {
  * a function mapper.  One of the reasons it is initially confusing.
  */
 void __map_ports() {
-  PMAP->KEYID        = PMAP_KEYID_VAL;
-
-  P2MAP->PMAP_REG[0] = PMAP_UCA1CLK;
-  P2MAP->PMAP_REG[3] = PMAP_UCA1SIMO;
-  P2MAP->PMAP_REG[4] = PMAP_UCA2SOMI;
-  P2MAP->PMAP_REG[5] = PMAP_UCB0SOMI;
-
-  P3MAP->PMAP_REG[0] = PMAP_UCA2SIMO;
-  P3MAP->PMAP_REG[2] = PMAP_UCA1SOMI;
-  P3MAP->PMAP_REG[5] = PMAP_UCB2SIMO;
-  P3MAP->PMAP_REG[6] = PMAP_UCB2CLK;
-  P3MAP->PMAP_REG[7] = PMAP_UCB2SOMI;
-
-  P7MAP->PMAP_REG[1] = PMAP_TA1CCR1A;
-  P7MAP->PMAP_REG[2] = PMAP_UCA0RXD;
-  P7MAP->PMAP_REG[3] = PMAP_UCA0TXD;
-  P7MAP->PMAP_REG[4] = PMAP_UCB0CLK;
-  P7MAP->PMAP_REG[5] = PMAP_UCB0SIMO;
-  P7MAP->PMAP_REG[7] = PMAP_UCA2CLK;
-
+  PMAP->KEYID = PMAP_KEYID_VAL;
+  P2MAP->PMAP_REG[5] = PMAP_SMCLK;
+  P7MAP->PMAP_REG[0] = PMAP_UCA1CLK;
+  P7MAP->PMAP_REG[1] = PMAP_UCA1SOMI;
+  P7MAP->PMAP_REG[2] = PMAP_UCA1SIMO;
+  P7MAP->PMAP_REG[3] = PMAP_TA1CCR1A;
   PMAP->KEYID = 0;              /* lock port mapper */
 }
 
@@ -425,28 +413,90 @@ void __watchdog_init() {
 }
 
 
-/*
- * see hardware.h for initial values and changed mappings
- */
 void __pins_init() {
-  P1->OUT = 0x60; P1->DIR = 0x6C;
-  P2->OUT = 0x89; P2->DIR = 0xC9;
-  P3->OUT = 0x7B; P3->DIR = 0x7B;
-  P4->OUT = 0x30; P4->DIR = 0xFD;
-  P5->OUT = 0x81; P5->DIR = 0xA7;
-  P6->OUT = 0x18; P6->DIR = 0x18;
-  P7->OUT = 0xF9; P7->DIR = 0xF8;
-  P8->OUT = 0x00; P8->DIR = 0x02;
-  PJ->OUT = 0x04; PJ->DIR = 0x06;
 
   /*
-   * gps_cts has a pull up so that the gps comes up in UART mode.
+   * see hardware.h for initial values and changed mappings
    */
-  P7->REN = 0x01;
+//  __map_ports();              /* done early for now */
+
+  PA->OUT = 0;                  /* zero all 10 port registers */
+  PB->OUT = 0;                  /* P4/P3 */
+  PC->OUT = 0;                  /* P6/P5 */
+  PD->OUT = 0;                  /* P8/P7 */
+  PE->OUT = 0;                  /* P10/P9 */
+
+  P1->OUT = 0x12;               /* P1.1/P1.4 need pull up */
+  P1->DIR = 0x01;
+  P1->REN = 0x12;
+
+  /* smclk and LED2 pieces */
+  P2->DIR  = 0x27;
+  P2->SEL0 = 0x20;
+  P2->SEL1 = 0x00;
+
+  /* gps is on P3, P4, and P6 */
+  P3->OUT = 0x08;
+  P3->DIR = 0x68;
+  P3->REN = 0x80;
 
   /*
-   * need to sort out how SD0 messes with Override.
+   * We bring the clocks out so we can watch them.
+   *
+   * gps_on_off is here too.
+   *
+   * P4.0 gps_on_off
+   * P4.2 ACLK
+   * P4.3 MCLK
+   *      RTCCLK
+   * P4.4 HSMCLK
+   *
+   * 7 6 5 4 3 2 1 0
+   * 0 0 0 1 1 1 0 0
    */
+  P4->DIR  = 0x1D;
+  P4->SEL0 = 0x1C;
+  P4->SEL1 = 0x00;
+
+  /* si446x_sdn = 1, si446x_csn = 1 */
+  P5->OUT  = 0x05;
+  P5->DIR  = 0x05;
+
+  /*
+   * gps_resetn and gps_awake are here.
+   *
+   * on boot, leave reset as an input, let it float.
+   * this lets the gps continue to do what it is doing.
+   * If we need to reset it, the gps driver will do it.
+   */
+  P6->OUT = 0x01;               /* gps_resetn deasserted */
+  P6->DIR = 0x01;               /* and make resetn an output */
+
+  /*
+   * SD1 is on P7.{0,1,2} and sd1_csn is P9.4
+   * Initial state is "powered off" so make all pins be pull ups
+   */
+  P9->OUT = 0x10;               /* deassert SD1_CSN */
+  P9->REN = 0x10;               /* pull up */
+
+  P7->OUT = 0x07;               /* clk, somi, simo, pull up */
+  P7->REN = 0x07;               /* pull up */
+
+  /*
+   * tell is P8.6  0pO, TA1.0 (TA1OUT0) is P8.0, 0m2O
+   * t_exc is 8.5 (0pO).
+   */
+  P8->DIR = 0x61;               /* tell/t_exc are outputs */
+  P8->SEL1 = 1;
+
+  /*
+   * SD0 is on P10.0 - P10.3  see hardware.h
+   * on reset all pins set to xpI (port, input)
+   *
+   * pull all lines up and leave as inputs.
+   */
+  P10->OUT = 0x0F;
+  P10->REN = 0x0F;              /* csn, clk, simo, somi pull up */
 }
 
 
@@ -835,7 +885,9 @@ void __system_init(bool disable_dcor) {
   __pwr_init();
   __flash_init();
 
+  BITBAND_PERI(P1->OUT, 0) = 1;
   __core_clk_init(disable_dcor);
+  BITBAND_PERI(P1->OUT, 0) = 0;
 
   __ta_init(TIMER_A0, TA_SMCLK_ID, MSP432_TA_EX);         /* Tmicro */
   __ta_init(TIMER_A1, TA_ACLK1,    TIMER_A_EX0_IDEX__1);  /* Tmilli */
@@ -937,41 +989,37 @@ void __Reset() {
   SCB->VTOR = (uint32_t) &__vectors;
   __DSB(); __ISB();
 
+  /* we do this early because of SMCLK.  Later can move into pins_init */
+  __map_ports();                /* change P2, P3, P7 mapping */
+
   /*
-   * tell is P1.2  0pO
-   * t_exc (tell_exeception) is P1.3 0pO
+   * send clocks out for debugging.
    *
-   * leave other pins in P1 as inputs until they are initialized properly.
+   * 4.2 ACLK
+   * 4.3 MCLK
+   * 4.4 HSMCLK
+   * 7.0 SMCLK
    */
-  P1->OUT = 0x60; P1->DIR = 0x0C;
-  WIGGLE_TELL;
+  P4->OUT  = 0;                 /* make sure gps_on_off doesn't wiggle */
+  P4->SEL0 = 0x1C;
+  P4->SEL1 = 0x00;
+  P4->DIR  = 0x1D;
+
+  P2->OUT  = 0;
+  P2->SEL0 = 0x20;              /* smclk */
+  P2->SEL1 = 0x00;
+  P2->DIR  = 0x27;
 
   /*
-   * gps/mems power rail.  For initial debugging, power up the GPS/MEMS rail
-   * and then set the I/O pins appropriately.
-   *
-   * Set P5->OUT (for the output values) but don't switch the direction off
-   * input yet.  First kick the gps/mems 1V8 rail.
+   * tell is P8.6  0pO, TA1.0 (TA1OUT0) is P8.0, 0m2O
+   * t_exc (tell_exeception) is 8.5 0pO
    */
-  P5->OUT = 0x81;
-  P5->DIR = 0x01;                       /* drive 1V8_en, turns on 1V8 for gps/mems */
-
-  /*
-   * now drive the chip selects for the 3 mems devices to a 1 (deselected) and
-   * drive the outputs.  gyro_csn is on P5, mag/accel_csn are on P1.
-   */
-  P5->DIR = 0xA7;
-  P1->DIR = 0x6C;
-
-  P4->OUT = 0x30;                       /* turn 3V3 ON, LDO2, and pwr Radio 1V8 */
-  P4->DIR = 0xFD;
-
-  P7->OUT = 0xF9;                       /* sd0 pwr on */
-  P7->DIR = 0xF8;                       /* among other things drive pwr_sd0_en 1 */
+  P8->OUT = 0;                  /* set tell and exc up */
+  P8->DIR = 0x61;
+  P8->SEL1 = 1;                 /* TA1.0 (OUT0) */
 
   __watchdog_init();
   __pins_init();
-  __map_ports();
 
   /*
    * invoke overwatch low level to see how we should proceed.  this gets

@@ -127,7 +127,7 @@ extern void owl_strange2gold(uint32_t loc);
 extern void owl_startup();
 
 /* see tos/system/panic/PanicP.nc */
-extern void __panic_exception_entry(uint32_t exception);
+extern void __panic_exception_entry(uint32_t exception, uint32_t exc_psr, uint32_t exc_msp);
 
 
 #ifdef MEMINIT_STOP
@@ -168,9 +168,7 @@ void handler_debug(uint32_t exception) {
   t0 = USECS_VAL;
   while ((USECS_VAL - t0) < WIGGLE_DELAY) ;
 
-  ROM_DEBUG_BREAK(0);
-
-#ifdef HANDLER_FAULT_WAIT
+#ifdef HANDLER_FAULT_WAIT_Save
   while (handler_fault_wait != 0xdeadbeaf) {
     nop();
   };
@@ -198,10 +196,14 @@ void HardFault_Handler() {
 void __default_handler()  __attribute__((interrupt));
 void __default_handler()  {
   uint32_t exception;
+  uint32_t exc_psr;
+  uint32_t exc_msp;
 
-  exception = __get_xPSR() & 0x1ff;
+  exc_psr = __get_xPSR();
+  exception = exc_psr & 0x1ff;
+  exc_msp = __get_MSP();
   handler_debug(exception);
-  __panic_exception_entry(exception);
+  __panic_exception_entry(exception, exc_psr, exc_msp);
 }
 
 
