@@ -47,7 +47,7 @@
 #ifndef __HARDWARE_H__
 #define __HARDWARE_H__
 
-#warning DEV6A/LIS331 varient
+#warning DEV6A/MEMS varient
 
 #define NO_MSP_CLASSIC_DEFINES
 #define __MSP432_DVRLIB_ROM__
