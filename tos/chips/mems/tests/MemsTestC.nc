@@ -23,4 +23,15 @@ implementation {
 
   components PanicC;
   MemsTestP.Panic -> PanicC;
+
+  components CollectC;
+  MemsTestP.Collect -> CollectC;
+
+  components PlatformC;
+  MemsTestP.Platform -> PlatformC;
+
+#ifdef REGIME_TEST
+  components RegimeC;
+  MemsTestP.RegimeCtrl -> RegimeC.Regime;
+#endif
 }
