@@ -46,7 +46,7 @@ implementation {
   /* see TmpPC */
   enum {
     TMP_CLIENT = 1,
-    TMP_ADDR   = 0x49,
+    TMP_ADDR   = 0x4a,
   };
 
   components HplTmpC;

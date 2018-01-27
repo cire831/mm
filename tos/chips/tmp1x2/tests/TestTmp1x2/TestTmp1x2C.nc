@@ -52,4 +52,13 @@ implementation {
   components PowerManagerC;
   App.PowerManager -> PowerManagerC;
   App.Resource     -> TmpPC;
+
+  components PanicC;
+  App.Panic -> PanicC;
+
+  components CollectC;
+  App.Collect -> CollectC;
+
+  components PlatformC;
+  App.Platform -> PlatformC;
 }

@@ -33,27 +33,40 @@
  */
 
 #include <stdio.h>
-#include "Timer.h"
+#include <Timer.h>
+#include <typed_data.h>
+#include <sensors.h>
 
+#define SAMPLE_COUNT 60
 uint32_t state;
+uint16_t tempSamples[SAMPLE_COUNT];
+uint32_t sample_idx;
+dt_sensor_data_t tdp; /* Temp Data Pointer */
 
 module TestTmp1x2P {
   uses {
     interface Boot;
+    interface Panic;
     interface SimpleSensor<uint16_t> as P;
     interface SimpleSensor<uint16_t> as X;
     interface Timer<TMilli> as  TestTimer;
     interface PowerManager;
+    interface Collect;
     interface Resource;
+    interface Platform;
   }
 }
 implementation {
   event void Boot.booted() {
+    nop();
+    nop();   /* BRK */
+    sample_idx = 0;
     call TestTimer.startPeriodic(1024);         /* about 1/min */
   }
 
   event void TestTimer.fired() {
     nop();
+    nop();   /* BRK */
     call PowerManager.battery_connected();
     call Resource.immediateRequest();
     call PowerManager.battery_connected();
@@ -65,16 +78,43 @@ implementation {
       call X.isPresent();
       call X.read();
     }
+    nop();
+    nop();   /* BRK */
     state++;
   }
 
   event void P.readDone(error_t error, uint16_t data) {
     nop();
+    nop();   /* BRK */
+    tempSamples[sample_idx] = data;
+    sample_idx++;
+    if (sample_idx >= SAMPLE_COUNT) {
+      nop();
+      nop();
+      nop();   /* BRK */
+      sample_idx = 0;
+      tdp.dtype = DT_SENSOR_DATA;
+      tdp.sns_id = SNS_ID_TMP_0;
+      tdp.len = (sizeof(dt_sensor_data_t) + (SAMPLE_COUNT));
+
+      call Collect.collect((void *) &tdp, sizeof(dt_sensor_data_t), (void *) &tempSamples, (SAMPLE_COUNT));
+    }
   }
 
   event void X.readDone(error_t error, uint16_t data) {
     nop();
+    nop();   /* BRK */
+    tempSamples[sample_idx] = data;
+    sample_idx++;
+    if (sample_idx >= SAMPLE_COUNT) {
+      nop();
+      nop();
+      nop();   /* BRK */
+      sample_idx = 0;
+    }
   }
 
   event void Resource.granted() { }
+
+  async event void Panic.hook() { }
 }
