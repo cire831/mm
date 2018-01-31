@@ -95,7 +95,6 @@ implementation {
     uint32_t dblk_upper;                /* inclusive  */
 
     /* last record number used */
-    uint32_t cur_recnum;                /* current record number */
     uint32_t dm_sig_b;
   } dmc;
 
@@ -103,6 +102,10 @@ implementation {
   uint8_t     *dm_buf;
   uint32_t     lower, cur_blk, upper;
   bool         do_erase = 0;
+
+  /*
+   * global persistant variables needed by resync/restart code
+   */
   dt_header_t  dt_header;
   int32_t      remaining_bytes;
   uint32_t     resync_blk;
@@ -113,6 +116,10 @@ implementation {
   uint16_t     partial_checksum;
   uint16_t     multiblk_expected_checksum;
   uint32_t     expected_recnum;
+
+  uint32_t     candidate_recnum;           /* inits to 0 */
+  uint32_t     candidate_last_sync_offset; /* inits to 0 */
+  datetime_t   candidate_datetime;         /* inits to 0 */
 
   /* forward references */
   uint32_t get_sync_dblk(dt_sync_t *dt_sync_ptr);
@@ -153,7 +160,6 @@ implementation {
     dmc.dblk_lower = lower;
     dmc.dblk_nxt   = lower + 1;
     dmc.dblk_upper = upper;
-    dmc.cur_recnum = 0;
     dm_state = DMS_REQUEST;
     if ((err = call SDResource.request()))
       dm_panic(2, err, 0);
@@ -201,7 +207,15 @@ implementation {
         return;
 
       case DMS_START:
-        /* if blk is erased, dmc.dblk_nxt is already correct. */
+        /*
+         * if blk is erased, we use the following:
+         *
+         * o dmc.dblk_nxt has been already set to dir + 1, correct
+         * o candidate_recnum is 0, will be incremented to 1 before use.
+         * o candidate_last_sync_offset is 0, no previous SYNC
+         * o candidate_datetime is 0, no known datetime.  We want to access
+         *   the datetime code to get current datetime if any.
+         */
         if (call SDraw.chk_erased(dp))
           break;
 
@@ -299,7 +313,7 @@ implementation {
           remaining_bytes -= Bytes2BufLimit;
           blk_num = 0;
           if (multiblk_expected_checksum == partial_checksum)
-            dmc.cur_recnum = expected_recnum;
+            candidate_recnum = expected_recnum;
           break;
         }
     }
@@ -315,6 +329,8 @@ implementation {
      * SD down.
      */
     nop();                              /* BRK */
+    call Collect.setLastRecNum(candidate_recnum);
+    call Collect.setLastSyncOffset(candidate_last_sync_offset);
     signal Booted.booted();
     call SDResource.release();
   }
@@ -375,7 +391,13 @@ implementation {
            dt_sync_ptr->len == sizeof(dt_dump_reboot_t))) {
         nop();                              /* BRK */
         if (recsum_valid_p((dt_header_t*)dt_sync_ptr)) {
-          dmc.cur_recnum = dt_sync_ptr->recnum;
+          candidate_recnum = dt_sync_ptr->recnum;
+
+          /* figure out file offset of this sync record */
+          candidate_last_sync_offset = 0;
+
+          /* candidate_datetime = 10 byte copy */
+
           i += dt_sync_ptr->len;
           return i;
         }
@@ -416,7 +438,7 @@ implementation {
     if (record_header->dtype <= DT_NONE || record_header->dtype > DT_MAX) {
       nop();                              /* BRK */
       if (prev_record != 0 && recsum_valid_p(prev_record))
-        dmc.cur_recnum = prev_record->recnum;
+        candidate_recnum = prev_record->recnum;
       return FALSE;
     }
     if (record_header->len > (SD_BLOCKSIZE -i)) {
@@ -425,7 +447,6 @@ implementation {
       resync_blk += number_sectors_to_advance + 1;
       if (resync_blk > dmc.dblk_nxt)
         dm_panic(7, err, 0);
-      return FALSE;
       if (resync_blk == dmc.dblk_nxt) {
         Bytes2BufLimit = (record_header->len - remaining_bytes);
         blk_num = resync_blk -= number_sectors_to_advance;
