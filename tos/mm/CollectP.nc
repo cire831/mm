@@ -488,6 +488,22 @@ implementation {
   }
 
 
+  /*
+   * setLastRecnum and setLastSyncOffset are used by Dblk Restart
+   * to initialize the starting record number and last sync offset
+   * on boot.
+   */
+  command void Collect.setLastRecnum(uint32_t recnum) {
+    if (recnum > dcc.cur_recnum)
+      dcc.cur_recnum = recnum;
+  }
+
+
+  command void Collect.setLastSyncOffset(uint32_t offset) {
+    dcc.last_sync_offset = offset;
+  }
+
+
   command void CollectEvent.logEvent(uint16_t ev, uint32_t arg0, uint32_t arg1,
                                                   uint32_t arg2, uint32_t arg3) {
     dt_event_t  e;

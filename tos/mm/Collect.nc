@@ -30,4 +30,7 @@ interface Collect {
                             uint8_t     *data,   uint16_t dlen);
 
   async command uint32_t buf_offset();
+
+  command void setLastRecnum(uint32_t recnum);
+  command void setLastSyncOffset(uint32_t offset);
 }
