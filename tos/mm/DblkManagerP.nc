@@ -47,6 +47,15 @@ typedef enum {
 } dm_state_t;
 
 
+typedef enum {
+  DMR_IDLE = 0,                         /* doing nothing */
+  DMR_1_SEC = 1,                        /* last 1 sector search */
+  DMR_8_SEC = 2,                        /* last 8 sectors search */
+  DMR_16_SEC = 3,                       /* last 16 sectors search */
+  DMR_FAIL = 4                          /* no records found */
+} dm_restart_t;
+
+
 #ifndef PANIC_DM
 enum {
   __pcode_dm = unique(UQ_PANIC_SUBSYS)
@@ -55,7 +64,8 @@ enum {
 #define PANIC_DM __pcode_dm
 #endif
 
-#define RESYNC_FAIL 0x666
+#define RESYNC_NOTFOUND 0x666
+
 
 module DblkManagerP {
   provides {
@@ -70,6 +80,7 @@ module DblkManagerP {
     interface SSWrite as SSW;
     interface Resource as SDResource;
     interface Panic;
+    interface Collect;
   }
 }
 
@@ -98,6 +109,7 @@ implementation {
     uint32_t dm_sig_b;
   } dmc;
 
+  dm_restart_t restart_state;
   dm_state_t   dm_state;
   uint8_t     *dm_buf;
   uint32_t     lower, cur_blk, upper;
@@ -108,8 +120,8 @@ implementation {
    */
   dt_header_t  dt_header;
   int32_t      remaining_bytes;
-  uint32_t     resync_blk;
-  uint32_t     dblk_count;
+  uint32_t     resync_blk;                /* inits to 0 */
+  uint32_t     resync_limit;
   uint32_t     Bytes2BufLimit;
   uint32_t     blk_num;
   uint8_t     *data_ptr;
@@ -125,9 +137,26 @@ implementation {
   uint32_t get_sync_dblk(dt_sync_t *dt_sync_ptr);
   bool     search_for_last_record(uint32_t i);
   uint32_t search_for_resync();
+  void initial_scan_sector();
+  bool next_scan_sector();
+  void recsum_multi_blk_p();
+
 
   void dm_panic(uint8_t where, parg_t p0, parg_t p1) {
     call Panic.panic(PANIC_DM, where, p0, p1, 0, 0);
+  }
+
+
+  /*
+   * Initialize for last_sync/last_rec scanning.  Start with the very
+   * last sector.  Most likely it will have a SYNC if a system flush
+   * was done.
+   */
+  void initialize_resync_scan() {
+    dmc.dblk_nxt = cur_blk;
+    resync_limit = dmc.dblk_nxt;
+    restart_state = DMR_1_SEC;
+    resync_blk = dmc.dblk_nxt - 1;
   }
 
 
@@ -140,7 +169,6 @@ implementation {
      * erase when we request.  The FS/erase will complete and then we
      * will get the grant.
      */
-    nop();                              /* BRK */
     if (do_erase) {
       do_erase = 0;
       call FileSystem.erase(FS_LOC_DBLK);
@@ -170,7 +198,6 @@ implementation {
   event void SDResource.granted() {
     error_t err;
 
-    nop();                              /* BRK */
     if (dm_state != DMS_REQUEST) {
       dm_panic(3, dm_state, 0);
       return;
@@ -182,19 +209,16 @@ implementation {
       dm_panic(4, (parg_t) dm_buf, 0);
       return;
     }
-    if ((err = call SDread.read(dmc.dblk_nxt, dm_buf))) {
+    if ((err = call SDread.read(dmc.dblk_nxt, dm_buf)))
       dm_panic(5, err, 0);
-      return;
-    }
   }
 
 
   event void SDread.readDone(uint32_t blk_id, uint8_t *read_buf, error_t err) {
     uint8_t    *dp;
     bool        empty;
-    uint32_t i;
+    uint32_t    sync_offset;
 
-    nop();                              /* BRK */
     dp = dm_buf;
     if (err || dp == NULL || dp != read_buf) {
       call Panic.panic(PANIC_DM, 6, err, (parg_t) dp, (parg_t) read_buf, 0);
@@ -243,11 +267,14 @@ implementation {
            * if empty we be good.  Otherwise no available storage.
            */
           if (empty) {
-            nop();                              /* BRK */
-            dmc.dblk_nxt = cur_blk;
-            dblk_count = dmc.dblk_nxt;
+            /*
+             * Initially, go back one sector before read,
+             * to check for sync/reboot record
+             */
+
+            /* search last sector for sync/reboot record */
+            initialize_resync_scan();
             dm_state = DMS_LAST_PREV_SYNC;
-            resync_blk = dmc.dblk_nxt - 1;
             if ((err = call SDread.read(resync_blk, dm_buf)))
               dm_panic(7, err, 0);
             return;
@@ -267,40 +294,49 @@ implementation {
         return;
 
       case DMS_LAST_PREV_SYNC:
-        nop();                              /* BRK */
-        i = search_for_resync();
-        if (i != RESYNC_FAIL)
-          if (search_for_last_record(i))
-            break;
-        if (i == RESYNC_FAIL && resync_blk == dblk_count) {
+        sync_offset = search_for_resync();
 
-          if (resync_blk == dmc.dblk_nxt) {
-            resync_blk = dmc.dblk_nxt - 8;
-            dblk_count = dmc.dblk_nxt - 1;
+        /*
+         * when sync record is found,
+         * search for last data record.
+         */
+        if (sync_offset != RESYNC_NOTFOUND) {
+          dm_state = DMS_LAST_RECORD_SEARCH;
+          if (search_for_last_record(sync_offset))
+            break;
+        } else {
+
+          /*
+           * resync_limit keeps track of which sectors have been read.
+           * makes sure the same sector is not read twice.
+           */
+          if (sync_offset == RESYNC_NOTFOUND && resync_blk == resync_limit) {
+            /*
+             * Routine to search previous sectors for sync/reboot record.
+             * Program keeps track of which sectors have been read,
+             * Checks previous 8 sectors first, then 16 sectors back.
+             */
+            next_scan_sector();
+            if (resync_blk == 0)
+              break;
           }
-
-          if (resync_blk == dmc.dblk_nxt - 1) {
-            dblk_count = dmc.dblk_nxt - 9;
-            resync_blk = dmc.dblk_nxt - 16;
-          }
-
-          if (resync_blk == dmc.dblk_nxt - 9)
-            break;
-
-          if (resync_blk < dmc.dblk_lower)
-            break;
-          if ((err = call SDread.read(resync_blk, dm_buf)))
-            dm_panic(7, err, 0);
-          return;
         }
+        if ((err = call SDread.read(resync_blk, dm_buf)))
+          dm_panic(7, err, 0);
         return;
 
       case DMS_LAST_RECORD_SEARCH:
-        search_for_last_record(0);
+        if (search_for_last_record(0))
+          break;
+
+        if ((err = call SDread.read(resync_blk, dm_buf)))
+          dm_panic(7, err, 0);
         return;
 
       case DMS_MULTI_BLK_RECSUM:
         data_ptr = dm_buf;
+
+        recsum_multi_blk_p();
 
         if(remaining_bytes >= SD_BLOCKSIZE) {
           Bytes2BufLimit = SD_BLOCKSIZE;
@@ -316,6 +352,14 @@ implementation {
             candidate_recnum = expected_recnum;
           break;
         }
+
+        if (blk_num) {
+          if ((err = call SDread.read(blk_num, dm_buf)))
+            dm_panic(8, err, 0);
+        } else {
+          break;
+        }
+        return;
     }
 
     dm_state = DMS_IDLE;
@@ -328,14 +372,72 @@ implementation {
      * Then when we release, it will get the SD without powering the
      * SD down.
      */
-    nop();                              /* BRK */
-    call Collect.setLastRecNum(candidate_recnum);
+    call Collect.setLastRecnum(candidate_recnum);
     call Collect.setLastSyncOffset(candidate_last_sync_offset);
     signal Booted.booted();
     call SDResource.release();
   }
 
 
+  /*
+   * next_scan_sector drives the search for sync/reboot records.
+   * It scans the last 8 sectors first, then 16 sectors if none are found.
+   */
+  bool next_scan_sector() {
+    error_t err = 0;
+
+    if (restart_state == DMR_1_SEC)
+      restart_state = DMR_8_SEC;
+
+    /*
+     * If no sync record found in last sector, go back and search last 8
+     * sectors
+     */
+    if (restart_state == DMR_8_SEC && resync_blk == dmc.dblk_nxt) {
+      if (dmc.dblk_nxt - 8 < dmc.dblk_lower) {
+        resync_blk = 0;
+        return FALSE;
+      }
+
+      restart_state = DMR_16_SEC;
+      resync_blk = dmc.dblk_nxt - 8;
+      resync_limit = dmc.dblk_nxt - 1;
+      return TRUE;
+    }
+
+    /*
+     * If no sync record found within last 8 sectors, go back and search
+     * last 16 sectors
+     */
+    if (restart_state == DMR_16_SEC && resync_blk == dmc.dblk_nxt - 1) {
+      if (dmc.dblk_nxt - 16 < dmc.dblk_lower) {
+        resync_blk = 0;
+        return FALSE;
+      }
+
+      restart_state = DMR_FAIL;
+      resync_blk = dmc.dblk_nxt - 16;
+      resync_limit = dmc.dblk_nxt - 9;
+      return TRUE;
+    }
+
+    /*
+     * If no sync record found within last 16 sectors, bail and do not
+     * update recnum or sync offset
+     */
+    if (restart_state == DMR_FAIL && resync_blk == dmc.dblk_nxt - 9) {
+      resync_blk = 0;
+      return TRUE;
+    }
+
+    dm_panic(7, err, 0);
+    return FALSE;
+  }
+
+
+  /*
+   * checksum routine for records within a single block
+   */
   bool recsum_valid_p(dt_header_t* record_ptr) {
     uint8_t * data = (uint8_t *)record_ptr;
     uint16_t expected_checksum = (record_ptr->recsum);
@@ -353,11 +455,13 @@ implementation {
   }
 
 
+  /*
+   * checksum routine for data records than span multiple blocks
+   */
   void recsum_multi_blk_p() {
     uint8_t * data = (uint8_t *)data_ptr;
     uint16_t checksum = 0;
     uint32_t i;
-    error_t err;
 
     for (i = 0; i < Bytes2BufLimit; i++) {
       checksum += data[i];
@@ -365,20 +469,22 @@ implementation {
 
     nop();                              /* BRK */
     partial_checksum += checksum;
-    if (blk_num) {
-      dm_state = DMS_MULTI_BLK_RECSUM;
-      if ((err = call SDread.read(blk_num, dm_buf)))
-        dm_panic(8, err, 0);
-    }
+    dm_state = DMS_MULTI_BLK_RECSUM;
     return;
   }
 
 
+  /*
+   * searches an entire block for sync/reboot records when a record is
+   * found, saves file offset and datetime, to send to Collect.
+   *
+   * return: buf_offset of found sync if any
+   *         RESYNC_NOTFOUND (666) if no sync found.
+   */
   uint32_t search_for_resync() {
     uint8_t    *dp = dm_buf;
     uint32_t i;
     dt_sync_t *dt_sync_ptr;
-    error_t err;
 
     for (i = 0; i < 512; i+=4) {
       dt_sync_ptr = (dt_sync_t*)&dp[i];
@@ -389,7 +495,7 @@ implementation {
           (dt_sync_ptr->sync_majik == SYNC_MAJIK &&
            dt_sync_ptr->dtype == DT_REBOOT &&
            dt_sync_ptr->len == sizeof(dt_dump_reboot_t))) {
-        nop();                              /* BRK */
+
         if (recsum_valid_p((dt_header_t*)dt_sync_ptr)) {
           candidate_recnum = dt_sync_ptr->recnum;
 
@@ -404,18 +510,15 @@ implementation {
       }
     }
     dm_state = DMS_LAST_PREV_SYNC;
-
     resync_blk++;
-
-    if (resync_blk == dmc.dblk_nxt)
-      return RESYNC_FAIL;
-
-    if ((err = call SDread.read(resync_blk, dp)))
-      dm_panic(7, err, 0);
-    return RESYNC_FAIL;
+    return RESYNC_NOTFOUND;
   }
 
 
+  /*
+   * scans all blocks up to dblk_next for valid data records.
+   * last record found is saved to send to Collect.
+   */
   bool search_for_last_record(uint32_t i) {
     error_t err = 0;
     uint8_t *dp = dm_buf;
@@ -423,7 +526,6 @@ implementation {
     dt_header_t* record_header = (dt_header_t*)&dp[i];
     dt_header_t* prev_record = 0;
 
-    nop();                              /* BRK */
     while (record_header->dtype > DT_NONE && record_header->dtype <= DT_MAX) {
       if(record_header->len < (SD_BLOCKSIZE - i)) {
         if (recsum_valid_p(record_header)) {
@@ -441,12 +543,14 @@ implementation {
         candidate_recnum = prev_record->recnum;
       return FALSE;
     }
-    if (record_header->len > (SD_BLOCKSIZE -i)) {
+    if (record_header->len > (SD_BLOCKSIZE - i)) {
       remaining_bytes = record_header->len - (SD_BLOCKSIZE - i);
       number_sectors_to_advance = remaining_bytes / SD_BLOCKSIZE;
       resync_blk += number_sectors_to_advance + 1;
+
       if (resync_blk > dmc.dblk_nxt)
         dm_panic(7, err, 0);
+
       if (resync_blk == dmc.dblk_nxt) {
         Bytes2BufLimit = (record_header->len - remaining_bytes);
         blk_num = resync_blk -= number_sectors_to_advance;
@@ -457,16 +561,15 @@ implementation {
         recsum_multi_blk_p();
       }
       resync_blk++;
-      dm_state = DMS_LAST_RECORD_SEARCH;
-      if ((err = call SDread.read(resync_blk, dp)))
-        dm_panic(8, err, 0);
       return FALSE;
     }
+
+    if (resync_blk == dmc.dblk_nxt) {
+      return TRUE;
+    }
+
     resync_blk++;
-    dm_state = DMS_LAST_RECORD_SEARCH;
-    if ((err = call SDread.read(resync_blk, dp)))
-      dm_panic(8, err, 0);
-    return TRUE;
+    return FALSE;
   }
 
 
