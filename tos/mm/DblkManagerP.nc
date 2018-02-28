@@ -41,6 +41,12 @@ typedef enum {
   DMS_REQUEST,                          /* resource requested */
   DMS_START,                            /* read first block, chk empty */
   DMS_SCAN,                             /* scanning for 1st blank */
+
+  /*
+   * SYNC searching is different from LAST RECORD search because
+   * the syncs are marshalled (small enough) while RECORDS are large.
+   * internal sync search state is handled by search_for_sync.
+   */
   DMS_LAST_PREV_SYNC,                   /* find last prev sync    */
   DMS_LAST_RECORD_SEARCH,               /* find last used recnum  */
   DMS_MULTI_BLK_RECSUM
@@ -49,11 +55,22 @@ typedef enum {
 
 typedef enum {
   DMR_IDLE = 0,                         /* doing nothing */
-  DMR_1_SEC = 1,                        /* last 1 sector search */
-  DMR_8_SEC = 2,                        /* last 8 sectors search */
-  DMR_16_SEC = 3,                       /* last 16 sectors search */
-  DMR_FAIL = 4                          /* no records found */
+  DMR_1_SECTOR,                         /* last 1 sector search */
+  DMR_8_SECTOR,                         /* last 8 sectors search */
+  DMR_16_SECTOR,                        /* last 16 sectors search */
+  DMR_FAIL,                             /* no records found */
 } dm_restart_t;
+
+
+typedef enum {
+  SFS_NONE                 = 0,
+  SFS_OUT_OF_DATA,
+
+  SFS_CORRUPT_SYNC,
+  SFS_SYNC_RECORD_NOTFOUND,
+
+  SFS_VALID_SYNC,
+} search_for_sync_t;
 
 
 #ifndef PANIC_DM
@@ -63,11 +80,6 @@ enum {
 
 #define PANIC_DM __pcode_dm
 #endif
-
-#define CORRUPT_RECORD_FOUND 0x333
-#define PARTIAL_RECORD_FOUND 0x555
-#define SYNC_RECORD_NOTFOUND 0x666
-#define VALID_RECORD_FOUND 0x777
 
 module DblkManagerP {
   provides {
@@ -107,7 +119,6 @@ implementation {
     uint32_t dblk_nxt;                  /* 0 means full          */
     uint32_t dblk_upper;                /* inclusive  */
 
-    /* last record number used */
     uint32_t dm_sig_b;
   } dmc;
 
@@ -116,7 +127,7 @@ implementation {
   uint8_t     *dm_buf;
   uint32_t     lower, cur_blk, upper;
   bool         do_erase = 0;
-  uint32_t    sync_offset;
+  uint32_t     cur_working_idx;
 
   /*
    * global persistant variables needed by resync/restart code
@@ -132,8 +143,10 @@ implementation {
   uint16_t     multiblk_expected_checksum;
   uint32_t     expected_recnum;
 
-  uint32_t     sync_copy_len;
+  /* control cells for sync search and sync's that span a blk boundary */
+  /* see search_for_sync for details */
   uint32_t     sync_copy_remaining;
+  uint32_t     sync_copy_len;
 
   uint32_t     candidate_recnum;           /* inits to 0 */
   uint32_t     candidate_last_sync_offset; /* inits to 0 */
@@ -141,13 +154,12 @@ implementation {
   bool record_found;
 
   /* forward references */
-  uint32_t get_sync_dblk(dt_sync_t *dt_sync_ptr);
-  bool     search_for_last_record();
-  uint32_t search_for_resync();
-  void initial_scan_sector();
-  bool next_scan_sector();
-  void recsum_multi_blk_p();
-  bool validate_sync();
+  uint32_t          get_sync_dblk(dt_sync_t *dt_sync_ptr);
+  bool              search_for_last_record();
+  search_for_sync_t search_for_sync();
+  bool              next_scan_sector();
+  void              recsum_multi_blk_p();
+  bool              validate_sync();
 
 
   void dm_panic(uint8_t where, parg_t p0, parg_t p1) {
@@ -160,10 +172,10 @@ implementation {
    * last sector.  Most likely it will have a SYNC if a system flush
    * was done.
    */
-  void initialize_resync_scan() {
+  void init_sync_scan() {
     dmc.dblk_nxt = cur_blk;
     resync_limit = dmc.dblk_nxt;
-    restart_state = DMR_1_SEC;
+    restart_state = DMR_1_SECTOR;
     resync_blk = dmc.dblk_nxt - 1;
     record_found = FALSE;
   }
@@ -276,9 +288,6 @@ implementation {
            * if empty we be good.  Otherwise no available storage.
            */
           if (empty) {
-
-            nop();
-            nop();
             nop();                              /* BRK */
             /*
              * Initially, go back one sector before read,
@@ -286,7 +295,7 @@ implementation {
              */
 
             /* search last sector for sync/reboot record */
-            initialize_resync_scan();
+            init_sync_scan();
             dm_state = DMS_LAST_PREV_SYNC;
             if ((err = call SDread.read(resync_blk, dm_buf)))
               dm_panic(7, err, 0);
@@ -307,38 +316,32 @@ implementation {
         return;
 
       case DMS_LAST_PREV_SYNC:
-        nop();
-        nop();
         nop();                              /* BRK */
         /*
-         * Initialization of sync_offset. Sync offset is a mirror of buf_offset.
+         * Initialization of cur_working_idx. Sync offset is a mirror of buf_offset.
          * Used for keeping track of index position while searching for syncs.
          */
 
         /*
          * Sector number of ((resync_block - dblk_low) * 512) + sync offset = file position
          */
-        if(sync_offset == 0) {
-          nop();
-          nop();
+        if (cur_working_idx == 0) {
           nop();                              /* BRK */
-          sync_state = search_for_resync();
+          sync_state = search_for_sync();
         }
         /*
          * when sync record is found,
          * search for last data record.
          */
 
-        if (sync_state != SYNC_RECORD_NOTFOUND) {
+        if (sync_state != SFS_SYNC_RECORD_NOTFOUND) {
           if (resync_blk == resync_limit) {
-            nop();
-            nop();
             nop();                              /* BRK */
             dm_state = DMS_LAST_RECORD_SEARCH;
             if(!search_for_last_record())
               break;
           } else {
-            sync_state = search_for_resync();
+            sync_state = search_for_sync();
           }
         }
 
@@ -346,7 +349,7 @@ implementation {
          * resync_limit keeps track of which sectors have been read.
          * makes sure the same sector is not read twice.
          */
-        if (sync_state == SYNC_RECORD_NOTFOUND) {
+        if (sync_state == SFS_SYNC_RECORD_NOTFOUND) {
           nop();
           nop();
           nop();                              /* BRK */
@@ -370,12 +373,12 @@ implementation {
               next_scan_sector();
 
               if (resync_blk == 0) {
-                sync_offset = 0;
+                cur_working_idx = 0;
                 break;
               }
             }
           } else {
-            sync_state = search_for_resync();
+            sync_state = search_for_sync();
           }
         }
         if ((err = call SDread.read(resync_blk, dm_buf)))
@@ -462,20 +465,20 @@ implementation {
     nop();
     nop();                              /* BRK */
 
-    if (restart_state == DMR_1_SEC)
-      restart_state = DMR_8_SEC;
+    if (restart_state == DMR_1_SECTOR)
+      restart_state = DMR_8_SECTOR;
 
     /*
      * If no sync record found in last sector, go back and search last 8
      * sectors
      */
-    if (restart_state == DMR_8_SEC && resync_blk == dmc.dblk_nxt) {
+    if (restart_state == DMR_8_SECTOR && resync_blk == dmc.dblk_nxt) {
       if (dmc.dblk_nxt - 8 < dmc.dblk_lower) {
         resync_blk = 0;
         return FALSE;
       }
 
-      restart_state = DMR_16_SEC;
+      restart_state = DMR_16_SECTOR;
       resync_blk = dmc.dblk_nxt - 8;
       resync_limit = dmc.dblk_nxt - 1;
       return TRUE;
@@ -485,7 +488,7 @@ implementation {
      * If no sync record found within last 8 sectors, go back and search
      * last 16 sectors
      */
-    if (restart_state == DMR_16_SEC && resync_blk == dmc.dblk_nxt - 1) {
+    if (restart_state == DMR_16_SECTOR && resync_blk == dmc.dblk_nxt - 1) {
       if (dmc.dblk_nxt - 16 < dmc.dblk_lower) {
         resync_blk = 0;
         return FALSE;
@@ -559,77 +562,100 @@ implementation {
    * found, saves file offset and datetime, to send to Collect.
    *
    * return:
-   * VALID_RECORD_FOUND
-   * CORRUPT_RECORD_FOUND
-   * PARTIAL_RECORD_FOUND
-   * SYNC_RECORD_NOTFOUND
+   * SFS_VALID_SYNC
+   * SFS_CORRUPT_SYNC
+   * SFS_OUT_OF_DATA
+   * SFS_SYNC_RECORD_NOTFOUND
+   *
+   * This routine uses global peristent variable to control its behaviour.  This
+   * is because we are searching for records that may span across multi blk boundaries.
+   *
+   * Sync Search States:
+   *
+   * sync_copy_remaining is 0:    searching for the start of a sync, no sync is in progress.
+   *      sync_copy_len is meaningless
+   *
+   * sync_copy_remaining is > 0   current working on a multi blk sync
+   *      sync_copy_len           how much of the sync has already been marshalled.
    */
-  uint32_t search_for_resync() {
+  search_for_sync_t search_for_sync() {
     uint8_t    *dp = dm_buf;
     dt_sync_t *dt_sync_ptr;
-    dt_dump_reboot_t * reboot_type;
+    dt_dump_reboot_t * reboot_type __attribute__((unused));
 
     nop();
     nop();
     nop();                              /* BRK */
 
     if(sync_copy_remaining == 0) {
-      for (; sync_offset < 512; sync_offset+=4) {
-        dt_sync_ptr = (dt_sync_t*)&dp[sync_offset];
+      /*
+       * working on a fresh sync.
+       *
+       */
+      for (; cur_working_idx < 512; cur_working_idx+=4) {
+        dt_sync_ptr = (dt_sync_t*)&dp[cur_working_idx];
 
-        if ((dt_sync_ptr->sync_majik == SYNC_MAJIK &&
-             dt_sync_ptr->dtype == DT_SYNC &&
+        if (cur_working_idx + sizeof(dt_sync_t) >= SD_BLOCKSIZE) {
+          /* need to marshall */
+          /* set up for the marshall */
+          return SFS_OUT_OF_DATA;
+        }
+
+        if (!validate_sync(dt_sync_ptr))
+          continue;
+
+        if (dt_sync_ptr->sync_majik != SYNC_MAJIK)
+          continue;
+
+        if ((dt_sync_ptr->dtype == DT_SYNC &&
              dt_sync_ptr->len == sizeof(dt_sync_t)) ||
-            (dt_sync_ptr->sync_majik == SYNC_MAJIK &&
-             dt_sync_ptr->dtype == DT_REBOOT &&
+            (dt_sync_ptr->dtype == DT_REBOOT &&
              dt_sync_ptr->len == sizeof(dt_dump_reboot_t))) {
-          nop();
-          nop();
           nop();                              /* BRK */
 
-          if((dt_sync_ptr->len + sync_offset) > SD_BLOCKSIZE) {
+          if((dt_sync_ptr->len + cur_working_idx) > SD_BLOCKSIZE) {
 
-            sync_copy_remaining = ((dt_sync_ptr->len + sync_offset) - SD_BLOCKSIZE);
+            sync_copy_remaining = ((dt_sync_ptr->len + cur_working_idx) - SD_BLOCKSIZE);
             sync_copy_len = dt_sync_ptr->len - sync_copy_remaining;
 
-            memcpy(&dt_header_copy, &dp[sync_offset], sync_copy_len);
+            memcpy(&dt_header_copy, &dp[cur_working_idx], sync_copy_len);
             resync_blk++;
-            return PARTIAL_RECORD_FOUND;
+            return SFS_OUT_OF_DATA;
           } else {
-            memcpy(&dt_header_copy, &dp[sync_offset], dt_sync_ptr->len);
+            memcpy(&dt_header_copy, &dp[cur_working_idx], dt_sync_ptr->len);
 
             if (validate_sync()) {
-              sync_offset += ((dt_sync_t*)dt_header_copy)->len;
-              return VALID_RECORD_FOUND;
+              cur_working_idx += ((dt_sync_t*)dt_header_copy)->len;
+              return SFS_VALID_SYNC;
             } else {
-              return CORRUPT_RECORD_FOUND;
+              return SFS_CORRUPT_SYNC;
             }
-            sync_offset += ((dt_sync_t*)dt_header_copy)->len;
+            cur_working_idx += ((dt_sync_t*)dt_header_copy)->len;
           }
         }
       }
       resync_blk++;
-      return SYNC_RECORD_NOTFOUND;
+      return SFS_SYNC_RECORD_NOTFOUND;
     } else {
       nop();
       nop();
       nop();                              /* BRK */
       /* Marshall second portion of partial record */
-      memcpy(&dt_header_copy[sync_copy_len], &dp[sync_offset+sync_copy_len], sync_copy_remaining);
+      memcpy(&dt_header_copy[sync_copy_len], &dp[cur_working_idx+sync_copy_len], sync_copy_remaining);
       sync_copy_remaining = 0;
       reboot_type = (dt_dump_reboot_t *)dt_header_copy;
 
       if (validate_sync()) {
-        sync_offset += sync_copy_remaining;
-        return VALID_RECORD_FOUND;
+        cur_working_idx += sync_copy_remaining;
+        return SFS_VALID_SYNC;
       } else {
-        return CORRUPT_RECORD_FOUND;
+        return SFS_CORRUPT_SYNC;
       }
     }
     nop();
     nop();
     nop();                              /* BRK */
-    return SYNC_RECORD_NOTFOUND;
+    return SFS_SYNC_RECORD_NOTFOUND;
   }
 
 
@@ -641,7 +667,7 @@ implementation {
     error_t err = 0;
     uint8_t *dp = dm_buf;
     uint32_t number_sectors_to_advance;
-    dt_header_t* record_header = (dt_header_t*)&dp[sync_offset];
+    dt_header_t* record_header = (dt_header_t*)&dp[cur_working_idx];
     dt_header_t* prev_record = 0;
 
     nop();
@@ -649,14 +675,14 @@ implementation {
     nop();                              /* BRK */
 
     while (record_header->dtype > DT_NONE && record_header->dtype <= DT_MAX) {
-      if(record_header->len < (SD_BLOCKSIZE - sync_offset)) {
+      if(record_header->len < (SD_BLOCKSIZE - cur_working_idx)) {
         nop();
         nop();
         nop();                              /* BRK */
         if (recsum_valid_p(record_header)) {
           prev_record = record_header;
-          sync_offset+=record_header->len;
-          record_header = (dt_header_t*)&dp[sync_offset];
+          cur_working_idx+=record_header->len;
+          record_header = (dt_header_t*)&dp[cur_working_idx];
         }
       } else {
         break;
@@ -670,11 +696,11 @@ implementation {
         candidate_recnum = prev_record->recnum;
       return FALSE;
     }
-    if (record_header->len > (SD_BLOCKSIZE - sync_offset)) {
+    if (record_header->len > (SD_BLOCKSIZE - cur_working_idx)) {
       nop();
       nop();
       nop();                              /* BRK */
-      remaining_bytes = record_header->len - (SD_BLOCKSIZE - sync_offset);
+      remaining_bytes = record_header->len - (SD_BLOCKSIZE - cur_working_idx);
       number_sectors_to_advance = remaining_bytes / SD_BLOCKSIZE;
       resync_blk += number_sectors_to_advance + 1;
 
@@ -698,14 +724,10 @@ implementation {
     }
 
     if (resync_blk == dmc.dblk_nxt) {
-      nop();
-      nop();
       nop();                              /* BRK */
       return FALSE;
     }
 
-    nop();
-    nop();
     nop();                              /* BRK */
     resync_blk++;
     return FALSE;
@@ -715,13 +737,12 @@ implementation {
   bool validate_sync() {
     if (recsum_valid_p((dt_header_t*)dt_header_copy)) {
       candidate_recnum = ((dt_sync_t*)dt_header_copy)->recnum;
-      candidate_last_sync_offset =  ((resync_blk - dmc.dblk_lower) * SD_BLOCKSIZE) + sync_offset;
+      candidate_last_sync_offset =  ((resync_blk - dmc.dblk_lower) * SD_BLOCKSIZE) + cur_working_idx;
       /* Add datetime routine here */
       record_found = TRUE;
       return TRUE;
-    } else {
-      return FALSE;
     }
+    return FALSE;
   }
 
 
