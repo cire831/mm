@@ -1,3 +1,6 @@
+
+from   __future__         import print_function
+
 import os
 import codecs
 import sys
@@ -163,7 +166,7 @@ if(not args.input):
 raw = inFile.read()
 consumed = panic_dir_obj.set(raw)
 panic_dir_sector = (panic_dir_obj['panic_dir_sector'].val)
-print ("panic_dir_sector: %d" % (panic_dir_sector))
+print("panic_dir_sector: %d" % (panic_dir_sector))
 
 
 panic_high_sector = (panic_dir_obj['panic_high_sector'].val)
@@ -198,36 +201,37 @@ def panic_search(plist):
         offset += 76800
     return plist
 
-print "Panic Inspector and Extractor \n"
+print('Panic Inspector and eXtractor \n')
 if(args.input and not args.display and not args.output):
-    print "usage: pix.py [-h] [-o OUTPUT] [-d] [-x] input \n"
-    print "pix.py: error: too few arguments"
+    print('usage: pix.py [-h] [-o OUTPUT] [-d] [-x] <input>\n')
+    print('pix:   error: too few arguments')
+    print('       need one of -x or -o and <input>')
 
 
 if(args.display):
     panic_search(PLIST)
     if(panic_search):
-        print ("%s Panic Dumps Found:" % (len(PLIST)))
+        print('%s Panic Dumps Found:' % (len(PLIST)))
         for element in PLIST:
             print(element)
 
 
 if(args.output and not args.extract):
-    print "\nUse -x to specify panic dump for extraction"
-    print "usage: pix.py [-h] [-o OUTPUT] [-d] [-x] input \n"
-    print "pix.py: error: too few arguments"
+    print('\nUse -x to specify panic dump for extraction')
+    print('usage: pix.py [-h] [-o OUTPUT] [-d] [-x] input \n')
+    print('pix.py: error: too few arguments')
 
 
 if(args.output and args.extract):
     if(not args.display):
-        print "\nUse -d to display list of panic dumps"
-        print "usage: pix.py [-h] [-o OUTPUT] [-d] [-x] input \n"
+        print('\nUse -d to display list of panic dumps')
+        print('usage: pix.py [-h] [-o OUTPUT] [-d] [-x] input \n')
 
     pblk = raw_input("\n Which Panic Dump to extract? [ex. '0']: ")
     if(pblk == "-d"):
         panic_search(PLIST)
         if(panic_search):
-            print ("%s Panic Dumps Found:" % (len(PLIST)))
+            print('%s Panic Dumps Found:' % (len(PLIST)))
             for element in PLIST:
                 print(element)
         pblk = raw_input("\n Which Panic Dump to extract? [ex. '0']: ")
@@ -311,5 +315,5 @@ if(args.output and args.extract):
     outFile.write(ram_header_end)
     ram_dump = raw[ram_sector:ram_sector+ram_size]
     outFile.write(ram_dump)
-    print ("\n Debug File Exported : %s" % (args.output))
+    print('\n  panic exported to CrashDebug: %s' % (args.output))
     outFile.close
