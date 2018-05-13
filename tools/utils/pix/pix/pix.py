@@ -109,13 +109,18 @@ def pix_init():
 
 # Checks each panic block for validity
 def panic_valid(bptr,list):
-    consumed   = panic_block_0_obj.set(bptr)
-    panic_info = panic_block_0_obj['panic_info']
-    pi_sig     = panic_info['pi_sig'].val
-    if pi_sig == PANIC_INFO_SIG:
-        PLIST.append(("Panic Block %d: " % (BLK)) + str(panic_info))
-        return list
-    return False
+    try:
+        consumed   = panic_block_0_obj.set(bptr)
+        panic_info = panic_block_0_obj['panic_info']
+        pi_sig     = panic_info['pi_sig'].val
+        if pi_sig == PANIC_INFO_SIG:
+            PLIST.append(("Panic Block %d: " % (BLK)) + str(panic_info))
+            return list
+        return False
+    except struct.error:
+        print('*** can\'t extract panic_block_0: wanted {}, got {}'.format(
+            len(panic_block_0_obj), len(bptr)))
+
 
 # Searches panic file for panic dumps
 def panic_search(plist):
