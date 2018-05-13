@@ -4,8 +4,8 @@ import sys
 import binascii
 import struct
 import argparse
-from collections import OrderedDict
-from decode_base import *
+from   collections import OrderedDict
+from   decode_base import *
 
 
 panic_dir_obj = aggie(OrderedDict([
@@ -26,6 +26,8 @@ panic_info_obj = aggie(OrderedDict([
     ('fail_count',       atom(('<I', '{}'))),
     ('subsys',           atom(('<B', '{}'))),
     ('where',            atom(('<B', '{}'))),
+    # kludge for now, need to fix panic_info
+    ('rt',               atom(('12s', '{}', binascii.hexlify))),
     ('pad',              atom(('<H', '{}'))),
     ('arg_0',            atom(('<I', '{:x}'))),
     ('arg_1',            atom(('<I', '{:x}'))),
