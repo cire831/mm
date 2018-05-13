@@ -14,6 +14,8 @@ from   tagcore.base_objs import *
 ppPP = PrettyPrinter(indent = 4)
 pp   = ppPP.pprint
 
+VERSION = '0.0.1.dev0'
+
 panic_dir_obj = aggie(OrderedDict([
     ('panic_dir_id',        atom(('4s', '{}'))),
     ('panic_dir_sig',       atom(('<I', '{:x}'))),
@@ -130,29 +132,26 @@ panic_block_0_obj = aggie(OrderedDict([
 
 def panic_args():
     parser = argparse.ArgumentParser(
-        description='Panic Dump Inspector')
+        description='Panic Inspector/eXtractor (PIX)')
 
-    parser.add_argument('input',
-                        type=argparse.FileType('rb'),
-                        help='panic dump file')
+    parser.add_argument('-V', '--version',
+        action  = 'version',
+        version = '%(prog)s ' + VERSION)
+
+    parser.add_argument('panic_file',
+                        type = argparse.FileType('rb'),
+                        help = 'panic file')
 
     parser.add_argument('-o', '--output',
-                        type=argparse.FileType('wb'),
-                        help='path to store output files')
-
-    parser.add_argument('-d', '--display',
-                        action='store_true',
-                        help='display panic info')
-
-    parser.add_argument('-x', '--extract',
-                        action='store_true',
-                        help='extract panic dump for debugging')
+                        type = argparse.FileType('wb'),
+                        help = 'dest filename for extraction')
 
     return parser.parse_args()
 
+
 # Global scope
 args    = panic_args()
-inFile  = args.input
+inFile  = args.panic_file
 outFile = args.output
 
 pblk = 'ffffff'
@@ -160,10 +159,6 @@ PLIST = []
 BLK = 0
 pi_sig_hex  = '0x44665041'
 dir_sig_hex = '0xddddb00b'
-
-if(not args.input):
-    print("Panic File Does Not Exist")
-    sys.exit(0)
 
 # Read in Directory block for verification
 raw = inFile.read()
@@ -193,9 +188,10 @@ def panic_verify(bptr,list):
 
 # Searches panic file for panic dumps
 def panic_search(plist):
-    offset = 512
     global BLK
-    while(args.input != ""):
+
+    offset = 512
+    while True:
         buf = raw[offset:(offset+512)]
         if not buf: break
         p = panic_verify(buf,plist)
@@ -205,41 +201,17 @@ def panic_search(plist):
     return plist
 
 print('Panic Inspector/eXtractor')
-if(args.input and not args.display and not args.output):
-    print('usage: pix.py [-h] [-o OUTPUT] [-d] [-x] <input>\n')
-    print('pix:   error: too few arguments')
-    print('       need one of -x or -o and <input>')
 
+# always display
+if panic_search(PLIST):
+    print('%s Panic Dumps Found:' % (len(PLIST)))
+    for element in PLIST:
+        print(element)
 
-if(args.display):
-    panic_search(PLIST)
-    if(panic_search):
-        print('%s Panic Dumps Found:' % (len(PLIST)))
-        for element in PLIST:
-            print(element)
-
-
-if(args.output and not args.extract):
-    print('\nUse -x to specify panic dump for extraction')
-    print('usage: pix.py [-h] [-o OUTPUT] [-d] [-x] input \n')
-    print('pix.py: error: too few arguments')
-
-
-if(args.output and args.extract):
-    if(not args.display):
-        print('\nUse -d to display list of panic dumps')
-        print('usage: pix.py [-h] [-o OUTPUT] [-d] [-x] input \n')
-
-    pblk = raw_input("\n Which Panic Dump to extract? [ex. '0']: ")
-    if(pblk == "-d"):
-        panic_search(PLIST)
-        if(panic_search):
-            print('%s Panic Dumps Found:' % (len(PLIST)))
-            for element in PLIST:
-                print(element)
-        pblk = raw_input("\n Which Panic Dump to extract? [ex. '0']: ")
-
-    pblk_offset = 512*150*int(pblk)+512
+if args.output:
+    pblk = raw_input("\n*** dump to extract: ")
+    pblk = int(pblk)
+    pblk_offset = 512 * 150 * pblk + 512
     ex_blk      = raw[pblk_offset:]
     consumed    = panic_block_0_obj.set(ex_blk)
 
@@ -318,5 +290,6 @@ if(args.output and args.extract):
     outFile.write(ram_header_end)
     ram_dump = raw[ram_sector:ram_sector+ram_size]
     outFile.write(ram_dump)
-    print('\n  panic exported to CrashDebug: %s' % (args.output))
+    print('*** panic {} exported to CrashDebug: {}'.format(
+        pblk, args.output.name))
     outFile.close
