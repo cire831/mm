@@ -40,20 +40,21 @@ positional argument:
   panic_file      input file, composite PANIC file.
 '''
 
-from   __future__         import print_function
+from   __future__               import print_function
+
+VERSION = '0.0.1.dev2'
 
 import sys
 import struct
 import argparse
-from   collections       import OrderedDict
-from   pprint            import PrettyPrinter
+from   collections              import OrderedDict
+from   pprint                   import PrettyPrinter
 
-from   panic_headers     import *
+from   tagcore                  import *
+from   tagcore.panic_headers    import *
 
 ppPP = PrettyPrinter(indent = 4)
 pp   = ppPP.pprint
-
-VERSION = '0.0.1.dev1'
 
 def panic_args():
     parser = argparse.ArgumentParser(
