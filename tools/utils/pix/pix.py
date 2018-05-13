@@ -1,41 +1,44 @@
 
 from   __future__         import print_function
 
-import os
-import codecs
 import sys
 import binascii
 import struct
 import argparse
-from   collections import OrderedDict
-from   decode_base import *
+from   collections       import OrderedDict
+from   pprint            import PrettyPrinter
 
+from   tagcore           import *
+from   tagcore.base_objs import *
+
+ppPP = PrettyPrinter(indent = 4)
+pp   = ppPP.pprint
 
 panic_dir_obj = aggie(OrderedDict([
-    ('panic_dir_id',        atom(('I', '{}'))),
+    ('panic_dir_id',        atom(('4s', '{}'))),
     ('panic_dir_sig',       atom(('<I', '{:x}'))),
     ('panic_dir_sector',    atom(('<I', '{}'))),
     ('panic_high_sector',   atom(('<I', '{}'))),
-    ('panic_block_sector',  atom(('<I', '{}'))),
+    ('panic_block_index',   atom(('<I', '{}'))),
+    ('panic_block_index_max',atom(('<I', '{}'))),
     ('panic_block_size',    atom(('<I', '{}'))),
     ('panic_dir_checksum',  atom(('<I', '{}')))
 ]))
 
 
 panic_info_obj = aggie(OrderedDict([
-    ('pi_sig',           atom(('<I', '{:x}'))),
-    ('boot_count',       atom(('<I', '{}'))),
-    ('systime',          atom(('<Q', '{}'))),
-    ('fail_count',       atom(('<I', '{}'))),
-    ('subsys',           atom(('<B', '{}'))),
-    ('where',            atom(('<B', '{}'))),
+    ('pi_sig',           atom(('<I', '{:04x}'))),
+    ('boot_count',       atom(('<I', '{:2}'))),
     # kludge for now, need to fix panic_info
     ('rt',               atom(('12s', '{}', binascii.hexlify))),
+    ('fail_count',       atom(('<I', '{:02}'))),
+    ('subsys',           atom(('<B', '{:02}'))),
+    ('where',            atom(('<B', '{:02}'))),
     ('pad',              atom(('<H', '{}'))),
-    ('arg_0',            atom(('<I', '{:x}'))),
-    ('arg_1',            atom(('<I', '{:x}'))),
-    ('arg_2',            atom(('<I', '{:x}'))),
-    ('arg_3',            atom(('<I', '{:x}')))
+    ('arg_0',            atom(('<I', '{:08x}'))),
+    ('arg_1',            atom(('<I', '{:08x}'))),
+    ('arg_2',            atom(('<I', '{:08x}'))),
+    ('arg_3',            atom(('<I', '{:08x}')))
 ]))
 
 
@@ -201,7 +204,7 @@ def panic_search(plist):
         offset += 76800
     return plist
 
-print('Panic Inspector and eXtractor \n')
+print('Panic Inspector/eXtractor')
 if(args.input and not args.display and not args.output):
     print('usage: pix.py [-h] [-o OUTPUT] [-d] [-x] <input>\n')
     print('pix:   error: too few arguments')
