@@ -145,14 +145,14 @@ def panic_args():
     return parser.parse_args()
 
 # Global scope
-args = panic_args()
-inFile = args.input
+args    = panic_args()
+inFile  = args.input
 outFile = args.output
 
 pblk = 'ffffff'
 PLIST = []
 BLK = 0
-pi_sig_hex = '0x44665041'
+pi_sig_hex  = '0x44665041'
 dir_sig_hex = '0xddddb00b'
 
 if(not args.input):
@@ -167,8 +167,8 @@ print ("panic_dir_sector: %d" % (panic_dir_sector))
 
 
 panic_high_sector = (panic_dir_obj['panic_high_sector'].val)
-panic_block_size = (panic_dir_obj['panic_block_size'].val)
-dir_sig = (panic_dir_obj['panic_dir_sig'].val)
+panic_block_size  = (panic_dir_obj['panic_block_size'].val)
+dir_sig           = (panic_dir_obj['panic_dir_sig'].val)
 
 if (hex(dir_sig) != dir_sig_hex):
     print('dir_sig_mismatch')
@@ -233,64 +233,64 @@ if(args.output and args.extract):
         pblk = raw_input("\n Which Panic Dump to extract? [ex. '0']: ")
 
     pblk_offset = 512*150*int(pblk)+512
-    ex_blk = raw[pblk_offset:]
-    consumed = panic_block_0_obj.set(ex_blk)
+    ex_blk      = raw[pblk_offset:]
+    consumed    = panic_block_0_obj.set(ex_blk)
 
     panic_info = panic_block_0_obj['panic_info']
     image_info = panic_block_0_obj['image_info']
-    add_info = panic_block_0_obj['add_info']
+    add_info   = panic_block_0_obj['add_info']
     crash_info = panic_block_0_obj['crash_info']
     ram_header = panic_block_0_obj['ram_header']
 
-    ci_sig = (crash_info['ci_sig'].val)
-    cc_sig = (crash_info['cc_sig'].val)
-    cc_sig = struct.pack('>I',cc_sig)
-    cc_flags = (crash_info['flags'].val)
-    ci_sig = (crash_info['ci_sig'].val)
-    cc_sig = (crash_info['cc_sig'].val)
-    cc_sig = struct.pack('>I',cc_sig)
-    cc_flags = (crash_info['flags'].val)
-    bxReg_0 = (crash_info['bxReg_0'].val)
-    bxReg_1 = (crash_info['bxReg_1'].val)
-    bxReg_2 = (crash_info['bxReg_2'].val)
-    bxReg_3 = (crash_info['bxReg_3'].val)
-    bxReg_4 = (crash_info['bxReg_4'].val)
-    bxReg_5 = (crash_info['bxReg_5'].val)
-    bxReg_6 = (crash_info['bxReg_6'].val)
-    bxReg_7 = (crash_info['bxReg_7'].val)
-    bxReg_8 = (crash_info['bxReg_8'].val)
-    bxReg_9 = (crash_info['bxReg_9'].val)
-    bxReg_10 = (crash_info['bxReg_10'].val)
-    bxReg_11 = (crash_info['bxReg_11'].val)
-    bxReg_12 = (crash_info['bxReg_12'].val)
-    bxSP = (crash_info['bxSP'].val)
-    bxLR = (crash_info['bxLR'].val)
-    bxPC = (crash_info['bxPC'].val)
-    bxPSR = (crash_info['bxPSR'].val)
-    axPSR = (crash_info['axPSR'].val)
-    ai_sig = (add_info['ai_sig'].val)
-    ii_sig = (image_info['ii_sig'].val)
-    pi_sig = (panic_info['pi_sig'].val)
-    pi_sig_hex = '44665041'
+    ci_sig      = (crash_info['ci_sig'].val)
+    cc_sig      = (crash_info['cc_sig'].val)
+    cc_sig      = struct.pack('>I',cc_sig)
+    cc_flags    = (crash_info['flags'].val)
+    ci_sig      = (crash_info['ci_sig'].val)
+    cc_sig      = (crash_info['cc_sig'].val)
+    cc_sig      = struct.pack('>I',cc_sig)
+    cc_flags    = (crash_info['flags'].val)
+    bxReg_0     = (crash_info['bxReg_0'].val)
+    bxReg_1     = (crash_info['bxReg_1'].val)
+    bxReg_2     = (crash_info['bxReg_2'].val)
+    bxReg_3     = (crash_info['bxReg_3'].val)
+    bxReg_4     = (crash_info['bxReg_4'].val)
+    bxReg_5     = (crash_info['bxReg_5'].val)
+    bxReg_6     = (crash_info['bxReg_6'].val)
+    bxReg_7     = (crash_info['bxReg_7'].val)
+    bxReg_8     = (crash_info['bxReg_8'].val)
+    bxReg_9     = (crash_info['bxReg_9'].val)
+    bxReg_10    = (crash_info['bxReg_10'].val)
+    bxReg_11    = (crash_info['bxReg_11'].val)
+    bxReg_12    = (crash_info['bxReg_12'].val)
+    bxSP        = (crash_info['bxSP'].val)
+    bxLR        = (crash_info['bxLR'].val)
+    bxPC        = (crash_info['bxPC'].val)
+    bxPSR       = (crash_info['bxPSR'].val)
+    axPSR       = (crash_info['axPSR'].val)
+    ai_sig      = (add_info['ai_sig'].val)
+    ii_sig      = (image_info['ii_sig'].val)
+    pi_sig      = (panic_info['pi_sig'].val)
+    pi_sig_hex  = '44665041'
 
-    ram_sector = (add_info['ram_sector'].val)
-    ram_size = (add_info['ram_size'].val)
-    io_sector = (add_info['io_sector'].val)
+    ram_sector  = (add_info['ram_sector'].val)
+    ram_size    = (add_info['ram_size'].val)
+    io_sector   = (add_info['io_sector'].val)
     io_dump_start = ((io_sector - panic_dir_sector) * 512)
 
-    dump_end = (panic_dir_sector + (panic_block_size * 512))
-    a5 = (add_info['fcrumb_sector'].val)
-    ram_start = (ram_header['start'].val)
-    ram_end = (ram_header['end'].val)
+    dump_end    = (panic_dir_sector + (panic_block_size * 512))
+    a5          = (add_info['fcrumb_sector'].val)
+    ram_start   = (ram_header['start'].val)
+    ram_end     = (ram_header['end'].val)
     ram_header_start = struct.pack('<I',ram_start)
-    ram_header_end = struct.pack('<I',ram_end)
-    regs_1 = [cc_flags,bxReg_0,bxReg_1,bxReg_2]
-    regs_2 = [bxReg_3,bxReg_4,bxReg_5,bxReg_6]
-    regs_3 = [bxReg_7,bxReg_8,bxReg_9,bxReg_10]
-    regs_4 = [bxReg_11]
-    regs_5 = [bxReg_12]
-    regs_6 = [bxSP,bxLR,bxPC]
-    regs_7 = [bxPSR,axPSR]
+    ram_header_end   = struct.pack('<I',ram_end)
+    regs_1      = [cc_flags,bxReg_0,bxReg_1,bxReg_2]
+    regs_2      = [bxReg_3,bxReg_4,bxReg_5,bxReg_6]
+    regs_3      = [bxReg_7,bxReg_8,bxReg_9,bxReg_10]
+    regs_4      = [bxReg_11]
+    regs_5      = [bxReg_12]
+    regs_6      = [bxSP,bxLR,bxPC]
+    regs_7      = [bxPSR,axPSR]
 
     outFile.write(cc_sig)
     for b in regs_1:
