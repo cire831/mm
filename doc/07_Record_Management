@@ -91,8 +91,9 @@ o Sync/Reboot records.  When record sync has been lost, we use sync/reboot
   sync.  This is needed to preserve the back links between SYNC records
   (prev_sync).
 
-o Initilization of RtcTime, RecNum and LastSync.  (DblkManager/Boot
-  during SysBoot).
+o Initilization of RtcTime, RecNum and LastSync.  (DblkManager/Boot during
+  SysBoot).  We also want to extract last known position for restarting
+  the GPS in an efficient fashion.
 
   Upon reboot, we need to determine a good RtcTime, the last recnum used and
   the last sync prior to the new REBOOT record that will be laid down.
@@ -113,3 +114,40 @@ o Initilization of RtcTime, RecNum and LastSync.  (DblkManager/Boot
     from this record.  This is the new candidate recnum.
 
   o Candidate recnum becomes the last record number used.
+
+
+o Remote Resync
+
+  Remote Resync is the process of doing a Dblk resync but performed locally
+  on the tag itself.
+
+** All names subject to change (WIP).
+
+  there is a new dblk object (.resync) that is used for invoking remote resyncs
+  and obtaining status of the operation.
+
+  FileSystem                    TagFuse                 Tag
+
+  truncate -s <offset> .resync
+  truncate(.resync, offset)
+  ftruncate(fd, offset)
+    fd points to .resync
+                                -> msg
+                                                        DblkResync.resync(offset)
+                                                        SUCCESS
+            (blocking)                                  EODATA (offset past eof)
+                                                        EBUSY
+
+                                <- rsp
+
+  stat(.resync).st_size         -> getattr              returns current result...
+                                                        resync_offset: 0   (still working)
+                                                                       -1  (aborted)
+                                                                       <offset>
+
+            (blocking)                                  if aborted (-1) there should be a
+                                                        log entry in the dblk stream about
+                                                        what went wrong.
+
+                                <- rsp
+
