@@ -70,12 +70,19 @@ class CrashDumpFormat:
         image_info = self.panic['im']
         image_desc = image_info.getTLV(iip_tlv['desc'])
         rep0_desc = image_info.getTLV(iip_tlv['repo0'])
-        out = "{}/{}/{} {}:{}:{}.{}\n{} {}".format(panic_info['rt']['mon'].val,
+        rep1_desc = image_info.getTLV(iip_tlv['repo1'])
+        out = "CrashInfo:\n"
+        out += "{}/{}/{} {}:{}:{}.{} : {}\nRep0: {} Rep1:{}\n".format(panic_info['rt']['mon'].val,
             panic_info['rt']['day'].val, panic_info['rt']['year'].val,
             panic_info['rt']['hr'].val, panic_info['rt']['min'].val,
             panic_info['rt']['sec'].val, panic_info['rt']['sub_sec'].val,
-            image_desc, rep0_desc)
-        out += "\n"
+            image_desc, rep0_desc, rep1_desc)
+        out += "Panic Code : {}\n".format(panic_codes[panic_info['pi_pcode'].val])
+        out += "Panic Where : {}\n".format(panic_info['pi_where'].val)
+        out += "Panic Arg0 : {}\n".format(panic_info['pi_arg0'].val)
+        out += "Panic Arg1 : {}\n".format(panic_info['pi_arg1'].val)
+        out += "Panic Arg2 : {}\n".format(panic_info['pi_arg2'].val)
+        out += "Panic Arg3 : {}\n".format(panic_info['pi_arg3'].val)
         print(out)
         print(image_info)
 
