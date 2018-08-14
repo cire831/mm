@@ -64,7 +64,7 @@ class CrashDumpFormat:
         add_info   = self.panic_block0_obj['add_info']
         crash_info = self.panic_block1_obj['crash_info']
         if crash_info['ci_sig'].val != CRASH_INFO_SIG:
-            print('*** CrashInfo signature mismatch: wanted {:08x}, got {:08x}'.format(
+            print('*** CrashInfo signature error: wanted {:08x}, got {:08x}'.format(
                 CRASH_INFO_SIG, crash_info['ci_sig'].val))
 
         image_info = self.panic['im']
