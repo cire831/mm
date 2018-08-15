@@ -115,20 +115,22 @@ def panic_valid(blockno):
     offset = (blockno * (panic_block_size * DEFAULT_BLOCK_SIZE)) + DEFAULT_BLOCK_SIZE
     inFile.seek(offset)
     buf = inFile.read(DEFAULT_BLOCK_SIZE)
-
     panic_block_0_obj  = obj_panic_zero_0()
-    panic_block_0_size = len(panic_block_0_obj)
-    pbsize = len(panic_block_0_obj['panic_info']) + len(panic_block_0_obj['owcb_info'])
-    image_info = ImageInfo(buf[pbsize:])
-    bptr = buf
-    consumed   = panic_block_0_obj.set(bptr)
+    try:
+        pbsize = len(panic_block_0_obj['panic_info']) + len(panic_block_0_obj['owcb_info'])
+        image_info = ImageInfo(buf[pbsize:])
+    except ValueError as ex:
+        print("Warning: PB#{} {}".format(blockno, ex))
+        return False
+
+    consumed   = panic_block_0_obj.set(buf)
     panic_info = panic_block_0_obj['panic_info']
     pi_sig     = panic_info['pi_sig'].val
     if pi_sig != PANIC_INFO_SIG:
-        print("*** Panic Info Signature Fail :#{}  wanted {:08X}, got {:08X}".format(
+        print("*** PanicInfo Signature Fail :PB#{}  wanted {:08X}, got {:08X}".format(
             blockno,
             PANIC_INFO_SIG,
-            panic_info['pi_sig'],
+            pi_sig,
             ))
     return {'pb':panic_block_0_obj, 'im':image_info, 'offset':offset}
 
@@ -156,11 +158,12 @@ def panic_dir():
         image_info = panic['im']
         image_desc = image_info.getTLV(iip_tlv['desc'])
         rep0_desc = image_info.getTLV(iip_tlv['repo0'])
-        out += "#{} {}/{}/{} {}:{}:{}.{}\n{} {}".format(k,
+        out += "#{} {}/{}/{} {}:{}:{}.{} \t {}\n{} {}".format(k,
             panic_info['rt']['mon'].val,
             panic_info['rt']['day'].val, panic_info['rt']['year'].val,
             panic_info['rt']['hr'].val, panic_info['rt']['min'].val,
             panic_info['rt']['sec'].val, panic_info['rt']['sub_sec'].val,
+            panic_codes[panic_info['pi_pcode'].val],
             image_desc, rep0_desc)
         out += "\n"
         k += 1
@@ -214,8 +217,8 @@ def main():
 
     if args.output:
         panic_block = args.extract
-        if panic_block >= panic_block_index:
-            print("**Enter a valid Panic Block.  Use -l to see available panic blocks***")
+        if panic_block >= panic_block_index-1:
+            print("**Enter a valid Panic Block.***\nUse -l to see available panic blocks\nValid blocks : 0 - {}".format(panic_block_index-1))
             sys.exit(1)
 
         pb = plist[panic_block]
