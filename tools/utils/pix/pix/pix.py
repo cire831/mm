@@ -34,6 +34,8 @@ optional arguments:
   -h            show this help message and exit
   -V            show program's version number and exit
   -l            List all PanicBlocks available
+  --net         enable network (tagnet) i/o
+                (args.net, boolean)
 
   -o <output>   enables extraction and sets output file.
                 (args.output, file)
@@ -54,6 +56,7 @@ from   pprint                   import PrettyPrinter
 from   tagcore.core_headers     import *
 from   tagcore.imageinfo        import *
 from   tagcore.panic_headers    import *
+from   tagcore.tagfile          import *
 
 from crashdump                  import *
 
@@ -194,6 +197,10 @@ def panic_args():
                         type = argparse.FileType('wb'),
                         help = 'dest filename for extraction')
 
+    parser.add_argument('--net',
+                        action='store_true',
+                        help='use tag net io, (unbuffered io)')
+
     return parser.parse_args()
 
 def main():
@@ -206,7 +213,9 @@ def main():
     if args.version:
         print("Binfin Version : {}".format(__version__))
     '''
-    inFile  = args.panic_file
+    #inFile  = args.panic_file
+    # create file object that handles both buffered and direct io
+    inFile  = TagFile(args.panic_file, args.net)
     outFile = args.output
 
     pix_init()
