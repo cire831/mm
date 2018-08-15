@@ -40,7 +40,7 @@ class ImageInfo:
     IMAGE_INFO_SIG = 0x33275401
 
     '''
-    im_basic: will hold a obj_image_info struct from core_headers
+    im_info: will hold a obj_image_info struct from core_headers
         obj_image_info consists of:
             image_info_basic structure
             image_inf_plus
@@ -49,28 +49,29 @@ class ImageInfo:
             it determines the maximum size of the available space for TLV rows
         im_total_len is calculated based on the image_info size + im_tlv_block_len
     '''
-    im_basic = None
+    im_info = None
     im_plus = None
     im_tlv_rows = None
     im_tlv_block_len = 0
     im_total_len = 0
 
     def __init__(self, rec_buf):
-        self.im_basic = obj_image_info()
-        corelen = self.im_basic.set(rec_buf)
-        if self.im_basic['basic']['ii_sig'].val != self.IMAGE_INFO_SIG:
-            print('*** image signature checksum fail: expected {:08x}, got {:08x}'.format(
-                self.IMAGE_INFO_SIG, self.im_basic['basic']['ii_sig'].val))
-            sys.exit(2)
+        self.im_info = obj_image_info()
+        corelen = self.im_info.set(rec_buf)
+        if self.im_info['basic']['ii_sig'].val != self.IMAGE_INFO_SIG:
+            err = '*** ImageInfo signature fail: expected 0x{:08x}, got 0x{:08x}'.format(
+                self.IMAGE_INFO_SIG, self.im_info['basic']['ii_sig'].val)
+            raise ValueError(err)
+            return
 
-        self.im_tlv_rows = self.im_basic['plus']
-        self.im_tlv_block_len = int(self.im_basic['plus']['tlv_block_len'].val)
+        self.im_tlv_rows = self.im_info['plus']
+        self.im_tlv_block_len = int(self.im_info['plus']['tlv_block_len'].val)
         return
 
     def __repr__(self):
-        ver_id = self.im_basic['basic']['ver_id']
-        hw_ver = self.im_basic['basic']['hw_ver']
-        chksum = self.im_basic['basic']['im_chk'].val
+        ver_id = self.im_info['basic']['ver_id']
+        hw_ver = self.im_info['basic']['hw_ver']
+        chksum = self.im_info['basic']['im_chk'].val
         out  = "image_info_data:\n"
         out += 'sw_ver\t: {}.{}.{} (0x{:x})\n'.format(ver_id['major'],
                     ver_id['minor'], ver_id['build'], ver_id['build'].val)
@@ -84,7 +85,7 @@ class ImageInfo:
 
     def clearChecksum():
         #We set checksum to 0 since we calc. a new checksum every time
-        self.im_basic['basic']['im_chk'].val = 0
+        self.im_info['basic']['im_chk'].val = 0
 
     def _iipGetKeyByValue(self, val):
         for k, v in iip_tlv.items():
@@ -93,7 +94,7 @@ class ImageInfo:
         return 'unk_({})'.format(val)
 
     def updateBasic(self, field, value):
-        self.im_basic['basic'][field].val = value
+        self.im_info['basic'][field].val = value
         return
 
     '''
@@ -118,7 +119,7 @@ class ImageInfo:
         ELF or .bin files
     '''
     def build(self):
-        im_basic_out = self.im_basic.build()
+        im_basic_out = self.im_info.build()
         im_plus_out = self.im_tlv_rows.build_tlv()
 
         '''
