@@ -59,6 +59,29 @@ class CrashDumpFormat:
         self.panic_block1_obj.set(raw[self.DEFAULT_BLOCK_SIZE:])
         return
 
+    '''
+    Panic 0 & Panic 1 header validation checks.
+    ***Not called at this time***
+    06_panic document states that checksum should be here but it isn't
+    defined in core_headers...
+    until then. we stub this code out
+    '''
+    def validatePanic_0(self):
+        print(self.panic_block0_obj)
+        checksum_save = self.panic_block0_obj['panic_info']['panic_hdr_0_checksum'].val
+        self.panic_block0_obj['panic_info']['panic_hdr_0_checksum'] = 0
+        panic_zero_0 = self.panic_block0_obj.build()
+        p0_checksum = sum(panic_zero)
+        self.panic_block0_obj['panic_info']['panic_hdr_0_checksum'] = checksum_save
+        if p0_checksum != checksum_save:
+            print("*** Panic0 Checksum Fail: Expected 0x{:08X} Got 0x{:08X}".format(checksum_save, p0_checksum))
+            return false
+            print("*** Panic0 Checksum Fail: Expected 0x{:08X} Got 0x{:08X}".format(checksum_save, p0_checksum))
+        return true
+
+    def validatePanic_1(self):
+        return true
+
     def dump_build(self, outFile):
         panic_info = self.panic_block0_obj['panic_info']
         add_info   = self.panic_block0_obj['add_info']
