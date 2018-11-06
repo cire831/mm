@@ -666,6 +666,8 @@ void __pwr_init() {
   while (PCM->CTL1 & PCM_CTL1_PMR_BUSY);
   PCM->CTL0 = PCM_CTL0_KEY_VAL | AMR_VCORE;
   while (PCM->CTL1 & PCM_CTL1_PMR_BUSY);
+  PCM->CTL1 = (PCM->CTL1 & ~(PCM_CTL1_KEY_MASK)) | PCM_CTL1_KEY_VAL
+    | PCM_CTL1_FORCE_LPM_ENTRY;
 }
 
 
