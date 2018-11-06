@@ -1073,7 +1073,7 @@ void __rtc_init() {
     time.hr      = 0;
     time.min     = 0;
     time.sec     = 0;
-    time.sub_sec = 0;
+    time.sub_sec = 0x8000;              /* we run Q15 inverted */
     __rtc_setTime(&time);
     ow_control_block.rtc_src = RTCSRC_FORCED;
   }
@@ -1119,7 +1119,7 @@ void __start_time() {
 
   BITBAND_PERI(RTC_C->CTL13, RTC_C_CTL13_HOLD_OFS) = 1;
   TIMER_A1->CTL &= ~TIMER_A_CTL_MC_MASK;
-  TIMER_A1->R = RTC_C->PS;
+  TIMER_A1->R = RTC_C->PS ^ 0x8000;     /* Q15 inverted */
 
   TIMER_A1->CTL |= TA_FREERUN;
   BITBAND_PERI(RTC_C->CTL13, RTC_C_CTL13_HOLD_OFS) = 0;
