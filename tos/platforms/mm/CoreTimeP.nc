@@ -279,6 +279,26 @@ implementation {
   }
 
 
+#ifdef notdef
+  void capture_ps_int(uint8_t where, uint16_t ns, uint16_t mask,
+                      uint16_t ta, uint16_t ps) {
+    dbg_ps_int_t *psp;
+
+    psp = &dbg_ps_int[dbg_ps_int_nxt++];
+    if (dbg_ps_int_nxt >= DBG_PS_INT_ENTRIES)
+      dbg_ps_int_nxt = 0;
+    psp->us         = call Platform.usecsRaw();
+    psp->rtc_ps0ctl = RTC_C->PS0CTL;
+    psp->rtc_ps1ctl = RTC_C->PS1CTL;
+    psp->ns         = ns;
+    psp->mask       = mask;
+    psp->ta         = ta;
+    psp->ps         = ps;
+    psp->where      = where;
+  }
+#endif
+
+
   ct_rec_t *get_core_rec(uint16_t where) {
     ct_rec_t *rec;
 
@@ -620,17 +640,199 @@ implementation {
 
 
   /**
-   * initDeepSleep: set up for deep sleep
-   * Simple DeepSleep, switch main clocks to 128K.
+   * initDeepSleep: set RTC PS h/w to control deep sleep exit.
    *
-   * We simply switch the high speed clocks from the main clock
-   * (16Mi) to a low speed clock (128K).  We have observed idle
-   * current consumption drop from ~500 uA to ~150 uA.
+   * During deep sleep only the watchdog and RTC h/w are being clocked while
+   * other timing h/w is shutdown.  We want to use the PS h/w to effectively
+   * replace the next timing event that will fire.  PS is part of the RTC.
    *
-   * Note, if an interrupt occurs while we are checking various
-   * conditions, this interrupt will cause the deepsleep to
-   * be aborted.  This gets handled by the WFE.  Regular clocks
-   * are restored via irq_preamble().
+   * PS h/w can only be set to fire on powers of two.  We use this h/w
+   * to do a binary convergence to the next timing event at which time
+   * we will replace the actual h/w timing event.
+   *
+   * The RTC/PS registers are clocked from the BCLK/32Ki Xtal.  This clock
+   * is asynchronous wrt to the cpu clock.  This means we have to be careful
+   * when reading or writing the PS/R registers.
+   *
+   * The RTC sub-system is used as the primary time source for the core
+   * system.  When coming out of deep sleep, we use PS (or a PS transform)
+   * to reinitialize TA->R.  In general, we want TA->R (long term, Tmilli
+   * time base) and PS to track each other.
+   *
+   * We want to minimize how often we modify PS (its complicated, due to
+   * the asynchrony) while we need to use the available PS interrupts to
+   * converge to the next timing event.
+   *
+   * Types of timing events:
+   *
+   * I) Overflow.  When TA->R wraps from 0xFFFF to 0x0000 an overflow
+   *    interrupt is generated, TAIFG.  Replace if TAIE (enabled).
+   *
+   *    To make the PS interrupt h/w generate an interrupt at the overflow
+   *    event, we need to flip the high order bit of PS.  This results in
+   *    the following behaviour...
+   *
+   *    TA->R   0000 -> 7fff -> 8000 -> ffff -> 0000
+   *       PS   8000 -> ffff -> 0000 -> 7fff -> 8000
+   *                                            |
+   *                                            +-> PS1/Q7 int
+   *
+   *    We make this is the normal state of PS.  Inverted wrt TA->R (b15).
+   *
+   *    For example, 0140 -> 0000, overflow.  target ffff.  We program
+   *    PS_int of 0x8000.
+   *
+   *            R       PS      R ^ target      PS_int
+   *         0140     8140      febf            8000
+   *               ... intermediate states
+   *         7fff     ffff                      8000
+   *         8000     0000                      8000
+   *               ...
+   *         ffff     7fff                      8000
+   *               ... and at the PS1 interrupt
+   *         0000     8000                      8000  <- PS1 interrupt
+   *
+   *
+   * II) CCR interrupts.  Each TA has 5 CCRs that can be used to generate
+   *     a compare interrupt when TA->R reaches a particular value.  When
+   *     in deep sleep, TA is not clocked so we need to use RTC h/w to
+   *     replace any events we would miss.
+   *
+   *     We use successive PS interrupts to do a binary convergence to the
+   *     timing value being replaced.  The CCR event will only be replaced
+   *     if in compare mode (CMP) and enabled, CCIE.
+   *
+   *     Most of the time ('normal'), bit 15 of both R and the CCR value
+   *     being replace will be the same (both 0s or both 1s).  We xor R
+   *     against CCR to yield a bit mask.  The highest bit in this mask
+   *     will be the PS interrupt that we want to enable.
+   *
+   * IIa) (normal, b15 = 0): 0056 -> 2172.   CCR target is 2172.
+   *
+   *            R       PS      R ^ CCR         PS_int
+   *         0056     8056      2124            2000
+   *         2000     a000      0172            0100
+   *         2100     a100      0072            0040
+   *         2140     a140      0032            0020
+   *         2160     a160      0012            0010
+   *         2170     a170      0002            ----  below 8 jiffies
+   *
+   * IIb) (normal, b15 = 1): a40c -> d820.   CCR target is d820.
+   *
+   *            R       PS      R ^ CCR         PS_int
+   *         a40c     240c      7c2c            4000
+   *         d000     6000      0820            0800
+   *         d800     6800      0020            0020
+   *         d820     6820      0000            ----  below 8 jiffies
+   *
+   *
+   * III) However, when the b15s are different, we must be careful on the
+   *      handling.  Once we cross the appropriate boundary, the algorithm
+   *      reverts to normal handling (see above).
+   *
+   * IIIa) (special, b15_r != b15_ccr, R > CCR): 8001 -> 486a.
+   *
+   *            R       PS      R ^ CCR         PS_int
+   *         8001     0001      c86b            8000
+   *               ... intermediate states
+   *         ffff     7fff                      8000
+   *               ... and at the PS1 interrupt
+   *         0000     8000                      8000  <- PS1 interrupt
+   *         0000     8000      486a            4000
+   *         4000     c000      086a            0800
+   *         4800     c800      006a            0040
+   *         4840     c840      002a            0020
+   *         4860     c860      000a            0008
+   *         4868     c868      0002            ----  below 8 jiffies
+   *
+   *
+   * IIIb) (special, b15_r != b15_ccr, R < CCR): Consider 018c -> c86a.
+   *       this requires a forward crossing of the 7fff/8000 edge.  This
+   *       requires modifing PS to flip the sense of Q15.
+   *
+   *            R       PS      R ^ CCR         PS_int
+   *         018c     018c      c9ee            8000
+   *               ... intermediate states
+   *         7fff     7fff                      8000
+   *               ... and at the PS1 interrupt
+   *         8000     8000                      8000  <- PS1 interrupt
+   *               ... and revert PS1/Q7 back to inverted wrt R/Q15.
+   *         8000     0000      486a            4000
+   *         c000     4000      086a            0800
+   *         c800     4800      006a            0040
+   *         c840     4840      002a            0020
+   *         c860     4860      000a            0008
+   *         c868     4868      0002            ----  below 8 jiffies
+   *
+   *
+   * IV) Other considerations
+   *
+   *     The RTC h/w will clock the SECS register on any transition of PS
+   *     from 7fff->8000 or ffff->0000.  So we have to handle the situation
+   *     where PS is 7fff or ffff.  In this case we burn 1 jiffy (up to
+   *     30.5us) and let PS clock SECS prior to finishing the algorithm.
+   *     This will avoid issues with SECS being underclocked.
+   *
+   *     The f/7fff check only needs to occur when PS is modified for Q15
+   *     (PS1/Q7) inversion.  This occurs when handling the R < CCR special
+   *     case for the 7fff->8000 crossing.
+   *
+   *     The overflow crossing (ffff->0000) works normally without having
+   *     to modify PS.  This special case behaves like either of the
+   *     'normal' cases.
+   *
+   * V) Approach:
+   *
+   * a) TA->R and PS are kept synchronized.
+   * b) PS/Q15 is kept inverted from TA->R/Q15.
+   * c) PS/Q15 inversion allows simple overflow detection.  (I).
+   * d) CCR timing can be replaced by finding the next highest
+   *    bit next in sequence.  (II)
+   * e) let E_b be the next highest bit given the lowest CCR and current
+   *    TA->R.  E_b can be calculated by finding the highest bit set
+   *    in CCR xor TA->R.
+   *
+   *    E_b = 31 - clz(CCR[n] xor TA->R)   (count leading zeros)
+   *
+   * - find next timing event.
+   *   min(0 - R, CCR[n] - R), CCR compare needs to be enabled.
+   *
+   *   We find the lowest delta from now to the next event.  This is used
+   *   to determine the next bit we are interested in.  If the number of
+   *   jiffies to the next interrupt is less than 8 jiffies we abort.
+   *   7 jiffies (and below) is ~214us.
+   *
+   *   Given interrupt overhead, we have arbitrarily chosen <214us as the
+   *   limit below which it isn't worth going into deep sleep.  This
+   *   applies to all cases, overflow and ccr.  This verifies that there
+   *   are enough jiffies so entering deepsleep worth while.
+   *
+   * - if event is next overflow, enable PS/Q15 interrupt.
+   *   CT_DEEP_SLEEP.
+   *
+   * - if CCR event, compute E_b.  if E_b < 15 (not MSB)
+   *   enable PS/Q(E_b) interrupt.  CT_DEEP_SLEEP.
+   *
+   * - if CCR event crosses 7fff/8000 boundary.   E_b == 15 (MSB).
+   *   flip PS/Q15 inversion (normalize).  Enable PS/Q15 interrupt.
+   *   CT_DEEP_FLIPPED.
+   *
+   *   When PS/Q15 interrupt goes off flip PS/Q15 back to inverted state.
+   *
+   * After any enabled interrupt wakes us from deep sleep we need to do
+   * the following:
+   *
+   * - calculate the actual elapsed time.  sleep_exit - sleep_entry.
+   * - reinitialize usecsRaw   (T32_1)
+   * - reinitialize jiffiesRaw (TA->R)
+   *
+   *     TA->R = (PS xor 0x8000)       (PS/Q15 inverted)
+   *
+   * Lastly be careful, when waking from deep sleep to handle replacement
+   * of any interrupts.  We will compare updated values of R against overflow
+   * and CCRs that are enabled.  There may have been one more tick (jiffy) to
+   * the PS register when used to replace R.  This complicates the comparison
+   * when looking for interrupts to replace.
    *
    * It is assumed that this code is only called from McuSleep.sleep(),
    * and interrupts are blocked (atomic).
