@@ -640,6 +640,320 @@ implementation {
 
 
   /**
+   * setPSint(): set PS int according to a bit mask.
+   *
+   * sets next PS int to highest bit set in the intMask.
+   *
+   * input:   intMask       bit mask of bits we are interested in.
+   *                        we only care about the highest bit.
+   *
+   * returns: TRUE          if interrupt enabled.
+   *
+   *
+   * *** Interrupt Race: ***
+   *
+   * It is possible for an async jiffy tick to occur while we
+   * are busy preparing to set up for the PS interrupt (deep sleep).
+   *
+   * Call the bit we are interested in the 'X' bit.  (clever).
+   *
+   * This condition can occur when the PS register is clocked.  Lower bits
+   * can flip and this ripple will eventually make it to the X bit while we
+   *  are referencing it or changing h/w that relies on this bit.
+   *
+   * The X bit can switch from a 0 to a 1 or from a 1 to 0 depending on the
+   * state of previous bits.  For example, this can occur if we are very
+   * close to a PS int edge.
+   *
+   * We want to always capture the 0 to 1 transition even if this ripple
+   * happens as we are enabling the X bit interrupt.  The downside is if X
+   * is already set, we will immediately interrupt.  This shouldn't be a
+   * problem.
+   *
+   * First we clear the IFG and set the selector for the X bit.  Once the
+   * selector is set, a transition from 0 to 1 on the X bit will cause IFG
+   * to be set.  So if the ripple occurs while we are doing these operations
+   * we will see it.  The h/w will capture it.
+   *
+   * Next we set 'ifg' to be the current value of the IFG bit or the
+   * current value of the X bit.  That is if IFG has been set (since we
+   * cleared it, ripple occured immediately after we cleared it) or if the
+   * current value of the X bit is 1 then we will set IFG.  The X bit may
+   * already be a 1 because it got set while we are processing the deep sleep
+   * but prior to entering setPSint().
+   *
+   * Lastly we set the selector, 'ifg', and enable the interrupt.  If IFG is
+   * set we will take the interrupt when we exit the atomic block.
+   *
+   * If the X bit is set we ALWAYS want to take the interrupt.  We assume that
+   * at the start of the initDeepSleep activity, the edge we are looking for
+   * hasn't happened yet.
+   *
+   * There is code on entry to various deep sleep routines that checks to see
+   * which PS int we want to take.  In other words, for the X bit to set on
+   * entry requires it to have gotten set after those checks.  In other words
+   * we rippled after starting deep sleep.  Forcing the interrupt to always
+   * occur let's the RTC deep sleep interrupt handler deal with the new
+   * situation.  That way we don't miss the event.
+   */
+
+  bool setPSInt(uint16_t intMask) {
+    uint32_t bit;
+    uint16_t mask;                      /* bit in PS we are looking for */
+    uint16_t ifg;                       /* non-zero if we should force IFG */
+
+    ifg = 0;                            /* for now leave clear */
+    bit = 32 - __builtin_clz(intMask) - 1;
+    if (bit < 3 || !intMask) {
+      RTC_C->PS0CTL = 0;                /* turn all ints off */
+      RTC_C->PS1CTL = 0;
+      return FALSE;
+    }
+    mask = 1 << bit;
+    if (bit < 8) {
+      /* nuke PS1 int */
+      RTC_C->PS1CTL = 0;
+
+      /* set the selector, clear IFG */
+      RTC_C->PS0CTL = (bit << RTC_C_PS0CTL_RT0IP_OFS);
+
+      if ((RTC_C->PS0CTL & RTC_C_PS0CTL_RT0PSIFG) ||
+          (get_ps() & mask))
+        ifg = RTC_C_PS0CTL_RT0PSIFG;
+
+      /* same selector, set IFG dependent upon PS bit, and enable IE */
+      RTC_C->PS0CTL = (bit << RTC_C_PS0CTL_RT0IP_OFS) | RTC_C_PS0CTL_RT0PSIE | ifg;
+      return TRUE;
+    }
+
+    /* next 8 bits, 15-8, use PS1 */
+    bit &= 0x7;                         /* just the low 3 bits */
+
+    /* nuke PS0 int */
+    RTC_C->PS0CTL = 0;
+
+    /* set the selector, clear IFG */
+    RTC_C->PS1CTL = (bit << RTC_C_PS1CTL_RT1IP_OFS);
+
+    if ((RTC_C->PS1CTL & RTC_C_PS1CTL_RT1PSIFG) ||
+        (get_ps() & mask))
+      ifg = RTC_C_PS1CTL_RT1PSIFG;
+
+    /* reset the selector, same selector, clear IFG, and enable IE */
+    RTC_C->PS1CTL = (bit << RTC_C_PS1CTL_RT1IP_OFS) | RTC_C_PS1CTL_RT1PSIE | ifg;
+    return TRUE;
+  }
+
+
+  /**
+   * start_deep_sleep(): set RTC h/w for deepsleep
+   *
+   * o checks if deep sleep makes sense (make sure we have 7-8 ticks before the
+   *   target).
+   *
+   * o examine what kind of transitions we are doing.  Check for edge crossings.
+   *
+   * o If needed handle PS/Q15 zeroing for 7fff/8000 edge crossing.  Handle
+   *   TA-R/PS being 7fff which is too close to 8000 (would pop the SECS register).
+   *   If so let PS tick one more jiffy (to 8000) and try again.
+   *
+   * input:   ctcb.target   target event
+   *          ctcb.which    where did the target come from.
+   *
+   * returns: mask          0 if nothing to do.  Otherwise the bit mask of bits
+   *                        we are looking for.
+   */
+  uint16_t start_deep_sleep() {
+    uint16_t target;
+    uint16_t cur_ta, prev_ta, x;
+    uint32_t t0, t1;
+    uint16_t iter;
+
+    /*
+     * We have the delta from now to the first event.
+     * Make sure we have enough ticks (jiffies) to make
+     * deep sleep worth while.
+     */
+    target = ctcb.target;
+    x = target & ~7;                /* nuke low 3 bits. */
+
+    cur_ta  = call Platform.jiffiesRaw();
+
+    /*
+     * we want to continue if the following is true:
+     *
+     *   (x > cur_ta) && ((x - cur_ta) > 7).
+     *
+     * or we want to bail out on the inverse.
+     */
+    if ((x <= cur_ta) || ((x - cur_ta) < 8))
+      return 0;                         /* nothing to do. */
+
+    /* if overflow is the winner, force mask to 8000 */
+    if (ctcb.which == CT_WHICH_OVERFLOW)
+      return 0x8000;                    /* overflow mask */
+
+    /*
+     * Must be a CCR.  See what case it is.
+     *
+     * Check bit 15s.  If both equal, IIa and IIb.  Normal.  Straight
+     * forward.  h/w should already be set.  Tell finish to program the
+     * ps interrupt value.
+     *
+     * Xor target and cur_ta.  This will isolate bits that are different.
+     * We will later use the highest bit set to determine the next PS
+     * interrupt to set.  See setPSint()
+     */
+    if ((target & 0x8000) == (cur_ta & 0x8000))
+      return (target ^ cur_ta);
+
+    /*
+     * bit 15 differs between R and target.
+     * if R > target.  ie.  R is in the upper half > 0x7fff.
+     * then target must be in the lower half.  The xor will result in
+     * b15 being set which is what we want.  PS1/Q7 is still inverted
+     * which is also what we want.  Effectively find the next overflow.
+     * Normal processing.
+     */
+    if (cur_ta > target)
+      return (target ^ cur_ta);
+
+    /*
+     * bit 15 differs and R < target.
+     * can't be equal, because it would have been tossed out earlier.
+     *
+     * we have to invert PS1/Q7 to correctly sense the crossing between
+     * 7fff->8000.
+     *
+     * But if we are too close to the boundary, we want to wait for the next
+     * tick and run from there.
+     *
+     * change ctcb.which to indicate we have done this flippage.
+     */
+    prev_ta = call Platform.jiffiesRaw();
+    if (prev_ta < 0x7fff) {             /* not in danger of tweaking seconds */
+      /*
+       * o open the lock
+       * o jam TA->R (jiffiesRaw) into PS.
+       * o Will cause PS1/Q7 to be uninverted
+       *
+       * then recheck to make sure that R hasn't changed.  If it has rejam.
+       * should be fine because it just ticked and we have 30.5 usecs to get it
+       * right.
+       *
+       * o and close the lock.
+       */
+      RTC_C->CTL0 = (RTC_C->CTL0 & ~RTC_C_CTL0_KEY_MASK) | RTC_C_KEY;
+      RTC_C->PS   = prev_ta;
+      cur_ta = call Platform.jiffiesRaw();
+      if (cur_ta != prev_ta)            /* oops */
+        RTC_C->PS   = prev_ta;          /* all better */
+      BITBAND_PERI(RTC_C->CTL0, RTC_C_CTL0_KEY_OFS) = 0;
+
+      ctcb.which = CT_WHICH_EDGE;         /* looking for the 7fff/8000 edge */
+      return (target ^ cur_ta);
+    }
+
+    /*
+     * current TA->R is 0x7fff or possibly even 0x8000.  That means we are
+     * either about to tweak SECS or have already done so.  Make sure we
+     * have gotten there (ie. rolled over from 0x7fff to 0x8000).  And then
+     * try again.
+     *
+     * We have to handle this corner case to avoid missing a clock into the
+     * SECS register in the RTC.
+     */
+    t0 = call Platform.usecsRaw();
+    iter = 0;
+    do {
+      t1 = call Platform.usecsRaw();
+      if ((t1 - t0) > 61)               /* shouldn't be longer than 30.5 */
+        call Panic.panic(PANIC_TIME, 1, t0, t1, t1 - t0, 0);
+      iter++;
+      cur_ta = call Platform.jiffiesRaw();
+    } while(cur_ta < 0x8000);
+    ctcb.iter = iter;
+
+    /*
+     * rtc has rolled over to beginning of next second, R and PS are 8000
+     * call start_deep_sleep() again, only this time b15s are the same.
+     */
+    return start_deep_sleep();          /* and recurse */
+  }
+
+
+  /**
+   * finish_deep_sleep(): set PS interrupts and complete any house keeping.
+   *
+   * input:     mask    bit mask of next bits we are looking for.
+   *                    if mask is 0, kill interrupts and return.
+   *
+   * returns:   FALSE   didn't enter deep sleep.  Don't do it.
+   *            TRUE    deep sleep can be entered.
+   *
+   * setPSint() handles the zero mask case.
+   *
+   * Interrupts assumed masked (atomic).
+   */
+  bool finish_deep_sleep(uint16_t mask) {
+    sleepi_t    *rec;
+    ct_rec_t    *cr;
+
+    switch (ctcb.which) {
+      default:
+        call Panic.panic(PANIC_TIME, 1, ctcb.which, mask, 0, 0);
+      case CT_WHICH_EDGE:
+        ctcb.state = CT_DEEP_FLIPPED;   /* PS1/Q7 zeroed.  needs to be fixed */
+        break;
+      case CT_WHICH_OVERFLOW:           /* overflow wrap */
+      case 0:                           /* ccrs 0-4 */
+      case 1:
+      case 2:
+      case 3:
+      case 4:
+        ctcb.state = CT_DEEP_SLEEP;
+        break;
+    }
+    if (setPSInt(mask) == FALSE) {
+      dsi.entry_rtc.year = 0;
+      ctcb.state = CT_IDLE;
+      return FALSE;
+    }
+
+    cr = get_core_rec(16);              /* init and snag times */
+    dsi.entry_us = call Platform.usecsRaw();
+    call Rtc.getTime(&dsi.entry_rtc);
+    dsi.entry_ms = call Platform.localTime();
+
+    /* core time record */
+    cr->target = ctcb.target;
+    cr->which  = ctcb.which;
+    cr->ms = dsi.entry_ms;
+    call Rtc.copyTime(&cr->rtc, &dsi.entry_rtc);
+
+    /* sleep debug record */
+    rec = &sleep_trace[sleep_nxt];
+    if (rec->entry_rtc.year) {
+      sleep_nxt++;
+      if (sleep_nxt >= MAX_SLEEP_ENTRIES)
+        sleep_nxt = 0;
+      rec = &sleep_trace[sleep_nxt];
+    }
+    call Rtc.copyTime(&rec->entry_rtc, &dsi.entry_rtc);
+    rec->entry_ms = dsi.entry_ms;
+    rec->entry_us = dsi.entry_us;
+    rec->exit_rtc.year = 0;
+    rec->exit_us = 0;
+    rec->exit_ms = 0;
+    rec->target = ctcb.target;
+    rec->state  = ctcb.state;
+
+    SCB->SCR |= SCB_SCR_SLEEPDEEP_Msk;
+    return TRUE;
+  }
+
+
+  /**
    * initDeepSleep: set RTC PS h/w to control deep sleep exit.
    *
    * During deep sleep only the watchdog and RTC h/w are being clocked while
@@ -855,6 +1169,8 @@ implementation {
     call CoreTime.log(16);
     ct_ut0 = call Platform.usecsRaw();
     cur_ta = call Platform.jiffiesRaw();
+
+    /* probably not needed, done by finish_deep_sleep() */
     dsi.entry_ta = cur_ta;
     dsi.entry_us = call Platform.usecsRaw();
     dsi.entry_ms = call Platform.localTime();
@@ -920,24 +1236,21 @@ implementation {
     ct_d_u = ct_ut1 - ct_ut0;
 
     sleep_entry(1);
-    get_core_rec(16);
+    get_core_rec(17);
     call CoreTime.log(17);
 
-    nop();
-
-    CS->KEY  = CS_KEY_VAL;
     /*
-     * kick REFO to 128K.  Note it will be hard selected to 32Ki if the
-     * LFXT fails.  We use REFO @ 128K for MCLK to reduce interrupt latency
-     * when in deep sleep.
+     * start_deep_sleep() will return the mask we should use to find the
+     * next int.
+     *
+     * finish_deep_sleep() will set it and finish wacking the h/w if
+     * appropriate.
+     *
+     * Also takes care of any house keeping.
      */
-    CS->CLKEN |= CS_CLKEN_REFOFSEL;
-    CS->CTL1 = CS_CTL1_SELS__REFOCLK | CS_CTL1_DIVS__2 | CS_CTL1_DIVHS__2 |
-               CS_CTL1_SELA__LFXTCLK | CS_CTL1_DIVA__1 | 0 |
-               CS_CTL1_SELM__REFOCLK | CS_CTL1_DIVM__1;
-    CS->KEY = 0;                        /* lock module */
-    ct_cs_stat = CS->STAT;
+    finish_deep_sleep(start_deep_sleep());
     ctcb.state = CT_DEEP_SLEEP;
+    nop();
     return;
   }
 
